@@ -1,0 +1,11 @@
+name: cpu
+device_type: cpu
+torch_device: cpu
+fallback_policy: error
+ops:
+  fp4_dequant: device
+  fp8_dequant: device
+  mse_int4_quant: device
+  int4_pack: device
+  safetensors_io: cpu
+

@@ -1,0 +1,13 @@
+name: cambricon
+device_type: mlu
+torch_device: mlu:0
+runtime_imports:
+  - torch_mlu
+fallback_policy: warn
+ops:
+  fp4_dequant: device
+  fp8_dequant: device
+  mse_int4_quant: device
+  int4_pack: auto
+  safetensors_io: cpu
+

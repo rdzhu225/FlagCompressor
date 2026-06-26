@@ -1,0 +1,13 @@
+name: ascend
+device_type: npu
+torch_device: npu:0
+runtime_imports:
+  - torch_npu
+fallback_policy: warn
+ops:
+  fp4_dequant: device
+  fp8_dequant: device
+  mse_int4_quant: device
+  int4_pack: auto
+  safetensors_io: cpu
+
