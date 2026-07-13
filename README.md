@@ -1,106 +1,111 @@
 # Quant Engine
 
-`quant_engine` is a recipe-driven, backend-aware quantization and dtype conversion framework.
+`quant_engine` is a lightweight FlagOS quantization deployment tool for turning
+FP8/FP4 HuggingFace safetensors checkpoints into deployable mixed-precision
+artifacts.
 
-The project is designed around one boundary:
+The default path is checkpoint-only and weight-only:
 
 ```text
-Quantization algorithms are device-independent.
-Execution backends decide where each low-level op runs and when to fallback.
+inspect checkpoint -> classify common linear weights -> plan transforms -> convert weights -> write manifest/report
 ```
 
-This keeps model structure handling, low precision codecs, quantization algorithms, device execution, and inference artifacts separated.
+It does not import `transformers` or require calibration data unless a PTQ/QAT
+workflow asks for model execution.
 
-## MVP Scope
+## What It Supports Now
 
-Implemented in this skeleton:
-
-- HF `safetensors` checkpoint inspection.
-- Recipe-based module selection.
-- Tensor-level dry-run planning.
+- HF `safetensors` checkpoint scanning and shard-safe conversion.
+- Checkpoint-only classification of common linear weights:
+  - `attn_linear`
+  - `mlp_linear`
+  - `shared_moe_mlp_linear`
+  - `moe_mlp_linear`
+  - `embedding`
+  - `lm_head`
+- Recipe-based tensor selection.
+- Dry-run plans with group, transform, source-format, and module-kind summaries.
 - FP8 block + E8M0 scale to BF16.
 - MXFP4 E2M1 + E8M0 scale to BF16.
-- MoE FP4 to packed signed INT4 + BF16 per-group scale.
-- MSE INT4 quantizer.
-- CPU, CUDA, and generic torch-device backends.
-- Placeholder backend entries for Ascend, Cambricon, Kunlun, MUSA, and DCU style devices.
-- Calibration JSONL builder and hook-based activation stats collector.
-- `quant_manifest.json` and `quant_report.json` artifact outputs.
+- MoE expert FP4 to packed signed INT4 + BF16 per-group scale.
+- MSE INT4 weight-only quantization.
+- `quant_manifest.json` and `quant_report.json` outputs.
 
-## Commands
+## One-Command Weight Conversion
+
+This command mirrors the standalone `fp4_int4.py` flow:
+
+```bash
+quant-engine convert-weight-only \
+  --input /path/to/fp8_fp4_model \
+  --output /path/to/output_model \
+  --backend cuda
+```
+
+Built-in routing:
+
+```text
+moe_mlp_linear              FP4 -> packed INT4 + BF16 scale
+attn_linear                 FP8 -> BF16
+mlp_linear                  FP8 -> BF16
+shared_moe_mlp_linear       FP8 -> BF16
+BF16/FP32 tensors           kept as-is
+source scale tensors        removed after conversion
+```
+
+## Recipe Flow
+
+Use this when you want to inspect, edit, or review the conversion plan before
+running it:
 
 ```bash
 quant-engine inspect \
-  --model /path/to/model \
+  --model /path/to/fp8_fp4_model \
   --out profile.json \
-  --suggest-recipe recipe.yaml
-```
+  --suggest-recipe recipe.yaml \
+  --output-model /path/to/output_model
 
-```bash
 quant-engine dry-run --recipe recipe.yaml --out plan.json
+quant-engine convert --recipe recipe.yaml --backend cuda
 ```
 
-```bash
-quant-engine convert --recipe recipe.yaml
-```
-
-Backend override:
-
-```bash
-quant-engine convert \
-  --recipe recipe.yaml \
-  --backend ascend \
-  --device npu:0
-```
-
-## Recipe Boundary
-
-Users describe module groups and transforms in YAML instead of editing Python:
+Users adapt behavior in YAML first:
 
 ```yaml
 module_groups:
-  moe_experts:
-    include:
-      - ".*\\.experts\\.\\d+\\.(gate_proj|up_proj|down_proj|w1|w2|w3)\\.weight$"
-    exclude:
-      - ".*shared_experts.*"
+  moe_mlp_linear:
+    selector:
+      has_scale: true
+      module_kind: moe_mlp_linear
 
 rules:
   - name: moe_fp4_to_int4
-    group: moe_experts
+    group: moe_mlp_linear
+    when:
+      source_format: fp4_e2m1_e8m0
     transform: fp4_to_int4
     quantizer:
       name: mse
       group_size: 32
+      n_candidates: 200
 ```
 
-The Python code does not hardcode a specific model family as the only supported structure.
+## Adaptation Boundary
 
-## Backend Boundary
+Keep the lightweight path model-family agnostic:
 
-Quantization code should not call `.cuda()`, `.npu()`, or `.mlu()` directly.
+- Do not add `qwen.py`, `deepseek.py`, `llama.py`, or other model-family
+  adapters for checkpoint scanning.
+- Add only generic tensor-name patterns to
+  `quant_engine.inspect.tensor_classifier` when a new common linear naming
+  convention appears.
+- Prefer recipe selectors and built-in presets for policy changes.
+- Import `transformers` only for calibration, PTQ, QAT, or hook-based workflows
+  that need model execution.
 
-All compute goes through:
+## Artifact Boundary
 
-```python
-backend.run("fp4_dequant", weight, scale)
-backend.run("mse_int4_quant", dequant_weight)
-```
-
-Low-level ops are registered by name. A backend can provide native implementations later:
-
-```text
-fp4_dequant.cpu
-fp4_dequant.torch
-fp4_dequant.ascend      # future
-fp4_dequant.cambricon   # future
-```
-
-If a backend-specific op is absent, fallback behavior is controlled by recipe/backend policy.
-
-## Inference Boundary
-
-The conversion output includes:
+Conversion output includes:
 
 ```text
 quant_manifest.json
@@ -109,21 +114,27 @@ model.safetensors.index.json
 *.safetensors
 ```
 
-`quant_manifest.json` is the stable artifact ABI for inference integration. If vLLM-FL or SGLang-FL integration must live in their repositories, put only a small `quant_bridge` there:
+`quant_manifest.json` is the stable artifact ABI for inference integration.
+Inference repositories should only need a thin bridge that parses this manifest,
+loads weights/scales, and calls their current kernel hooks.
 
-```text
-quant_bridge/
-  artifact manifest parser
-  weight/scale loader
-  reference dequant
-  thin ports for current vLLM-FL/SGLang-FL hooks
+## Optional Calibration
+
+Calibration commands are available for PTQ/QAT work that needs activations or
+Hessian-like statistics:
+
+```bash
+quant-engine build-calib --model-path /path/to/model --output calib.jsonl
+quant-engine calibrate --recipe recipe.yaml --dataset-jsonl calib.jsonl --output calib_stats
 ```
 
-The bridge should consume this artifact ABI rather than re-implementing quantization format rules across unstable inference code.
+These commands require the optional `calibration` dependencies and may import
+`transformers`. They are not part of the default FP4/FP8 weight-only conversion
+path.
 
 ## Current Limitations
 
-- GPTQ and AWQ are declared as future quantizer slots but are not implemented yet.
-- Real NPU/MLU/XPU kernels are not included; generic torch-device execution and CPU fallback are the initial path.
-- `datasets` is optional and only needed for `build-calib`.
-
+- GPTQ/AWQ dispatch points are reserved, but the built-in one-command path uses
+  MSE INT4 today.
+- Real NPU/MLU/XPU kernels are not included yet; CPU/CUDA/generic torch-device
+  execution and fallback are the current path.

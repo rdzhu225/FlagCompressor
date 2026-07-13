@@ -5,18 +5,8 @@ from pathlib import Path
 from quant_engine.core.dtypes import tensor_dtype_name
 from quant_engine.core.profile import ModelProfile, TensorInfo
 from quant_engine.inspect.scale_pairing import build_scale_map
+from quant_engine.inspect.tensor_classifier import classify_weight_module, infer_source_format
 from quant_engine.io.hf_checkpoint import HfSafetensorsCheckpoint
-
-
-def infer_source_format(name: str, element_size: int, scale_name: str | None) -> str | None:
-    if scale_name is None:
-        return None
-    lower_name = name.lower()
-    if element_size == 1 and ("experts" in lower_name or "fp4" in lower_name):
-        return "fp4_e2m1_e8m0"
-    if element_size == 1:
-        return "fp8_block_e8m0"
-    return None
 
 
 def scan_hf_safetensors(model_path: str | Path) -> ModelProfile:
@@ -37,7 +27,13 @@ def scan_hf_safetensors(model_path: str | Path) -> ModelProfile:
         for tensor_name, tensor in state.items():
             scale_name = scale_map.get(tensor_name)
             role = "scale" if tensor_name in scale_map.values() else "weight"
-            source_format = infer_source_format(tensor_name, tensor.element_size(), scale_name)
+            module_kind = classify_weight_module(tensor_name) if role == "weight" else None
+            source_format = infer_source_format(
+                tensor_name,
+                tensor.element_size(),
+                scale_name,
+                module_kind,
+            )
             profile.tensors[tensor_name] = TensorInfo(
                 name=tensor_name,
                 shape=tuple(int(x) for x in tensor.shape),
@@ -47,7 +43,7 @@ def scan_hf_safetensors(model_path: str | Path) -> ModelProfile:
                 scale_name=scale_name,
                 role=role,
                 source_format=source_format,
+                module_kind=module_kind,
             )
 
     return profile
-

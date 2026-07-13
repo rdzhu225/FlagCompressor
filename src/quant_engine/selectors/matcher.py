@@ -46,6 +46,12 @@ def match_selector(tensor: TensorInfo, selector: dict[str, Any]) -> bool:
         if tensor.source_format not in formats:
             return False
 
+    module_kind = selector.get("module_kind", selector.get("module_type"))
+    if module_kind is not None:
+        module_kinds = set(_as_list(module_kind))
+        if tensor.module_kind not in module_kinds:
+            return False
+
     if "rank" in selector and len(tensor.shape) != int(selector["rank"]):
         return False
 
@@ -61,4 +67,3 @@ def match_group_selector(tensor: TensorInfo, group_config: dict[str, Any]) -> bo
         # Group exclusion is resolved by the planner after direct selector matching.
         return True
     return True
-

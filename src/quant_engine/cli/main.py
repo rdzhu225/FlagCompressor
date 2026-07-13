@@ -23,6 +23,15 @@ def build_parser() -> argparse.ArgumentParser:
     convert_parser.add_argument("--backend")
     convert_parser.add_argument("--device")
 
+    weight_only_parser = sub.add_parser(
+        "convert-weight-only",
+        help="Run the built-in checkpoint-only FP4/FP8 weight conversion preset.",
+    )
+    weight_only_parser.add_argument("--input", required=True)
+    weight_only_parser.add_argument("--output", required=True)
+    weight_only_parser.add_argument("--backend", default="cpu")
+    weight_only_parser.add_argument("--device")
+
     build_calib_parser = sub.add_parser("build-calib", help="Build a JSONL calibration dataset.")
     build_calib_parser.add_argument("--model-path", required=True)
     build_calib_parser.add_argument("--output", required=True)
@@ -59,6 +68,10 @@ def main() -> None:
         from quant_engine.cli import convert
 
         convert.run(args)
+    elif args.command == "convert-weight-only":
+        from quant_engine.cli import convert_weight_only
+
+        convert_weight_only.run(args)
     elif args.command == "build-calib":
         from quant_engine.calibration import dataset_builder
 
@@ -73,4 +86,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

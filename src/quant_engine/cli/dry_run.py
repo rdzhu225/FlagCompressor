@@ -25,6 +25,10 @@ def run(args) -> None:
     for transform, count in sorted(plan.transform_counts.items()):
         print(f"  {transform}: {count}")
     print(f"  keep: {len(plan.kept_tensors)}")
+    print()
+    print("Matched module kinds:")
+    for module_kind, count in sorted(plan.summary()["module_kinds"].items()):
+        print(f"  {module_kind}: {count}")
     if plan.unmatched_quantized_tensors:
         print()
         print("Warnings:")
@@ -32,4 +36,3 @@ def run(args) -> None:
 
     if args.out:
         print(f"\nWrote plan: {args.out}")
-

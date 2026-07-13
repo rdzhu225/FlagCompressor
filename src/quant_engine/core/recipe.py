@@ -4,8 +4,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 
 @dataclass(frozen=True)
 class ModelConfig:
@@ -57,10 +55,15 @@ class Recipe:
 
     @classmethod
     def load(cls, path: str | Path) -> "Recipe":
+        import yaml
+
         recipe_path = Path(path)
         with recipe_path.open("r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
+        return cls.from_dict(data)
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Recipe":
         model_data = data.get("model") or {}
         if "input_path" not in model_data:
             raise ValueError("Recipe missing model.input_path")
@@ -116,4 +119,3 @@ class Recipe:
             discover=data.get("discover") or {},
             raw=data,
         )
-

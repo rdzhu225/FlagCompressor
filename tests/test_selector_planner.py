@@ -16,6 +16,7 @@ def test_planner_uses_recipe_groups_without_model_hardcoding():
             element_size=1,
             scale_name="model.layers.0.mlp.experts.0.gate_proj.scale",
             source_format="fp4_e2m1_e8m0",
+            module_kind="moe_mlp_linear",
         ),
         "model.layers.0.self_attn.q_proj.weight": TensorInfo(
             name="model.layers.0.self_attn.q_proj.weight",
@@ -25,6 +26,7 @@ def test_planner_uses_recipe_groups_without_model_hardcoding():
             element_size=1,
             scale_name="model.layers.0.self_attn.q_proj.scale",
             source_format="fp8_block_e8m0",
+            module_kind="attn_linear",
         ),
     }
     recipe = Recipe(
@@ -32,22 +34,23 @@ def test_planner_uses_recipe_groups_without_model_hardcoding():
         model=ModelConfig(input_path=Path("/tmp/model"), output_path=Path("/tmp/out")),
         backend=BackendConfig(),
         module_groups={
-            "moe_experts": {
-                "include": [r".*\.experts\.\d+\..*\.weight$"],
-                "exclude": [r".*shared_experts.*"],
+            "moe_mlp_linear": {
+                "selector": {"has_scale": True, "module_kind": "moe_mlp_linear"},
             },
-            "scaled_dense": {"selector": {"has_scale": True}, "exclude_groups": ["moe_experts"]},
+            "scaled_non_moe_linear": {
+                "selector": {"has_scale": True, "module_kind": ["attn_linear", "mlp_linear"]},
+            },
         },
         rules=[
             RuleConfig(
                 name="moe_fp4_to_int4",
-                group="moe_experts",
+                group="moe_mlp_linear",
                 when={"source_format": "fp4_e2m1_e8m0"},
                 transform="fp4_to_int4",
             ),
             RuleConfig(
                 name="fp8_to_bf16",
-                group="scaled_dense",
+                group="scaled_non_moe_linear",
                 when={"has_scale": True},
                 transform="fp8_to_bf16",
             ),
@@ -55,4 +58,4 @@ def test_planner_uses_recipe_groups_without_model_hardcoding():
     )
     plan = build_plan(profile, recipe)
     assert plan.transform_counts == {"fp4_to_int4": 1, "fp8_to_bf16": 1}
-
+    assert plan.summary()["module_kinds"] == {"moe_mlp_linear": 1, "attn_linear": 1}

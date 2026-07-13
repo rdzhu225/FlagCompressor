@@ -19,26 +19,22 @@ discover:
   auto_pair_scales: true
 
 module_groups:
-  moe_experts:
-    include:
-      - ".*\\.experts\\.\\d+\\.(gate_proj|up_proj|down_proj|w1|w2|w3)\\.weight$"
-    exclude:
-      - ".*shared_experts.*"
-
-  moe_shared_experts:
-    include:
-      - ".*shared_experts.*\\.(gate_proj|up_proj|down_proj|w1|w2|w3)\\.weight$"
-
-  scaled_dense:
+  moe_mlp_linear:
     selector:
       has_scale: true
-    exclude_groups:
-      - moe_experts
-      - moe_shared_experts
+      module_kind: moe_mlp_linear
+
+  scaled_non_moe_linear:
+    selector:
+      has_scale: true
+      module_kind:
+        - attn_linear
+        - mlp_linear
+        - shared_moe_mlp_linear
 
 rules:
   - name: moe_fp4_to_int4
-    group: moe_experts
+    group: moe_mlp_linear
     when:
       source_format: fp4_e2m1_e8m0
     transform: fp4_to_int4
@@ -49,30 +45,10 @@ rules:
     output:
       scale_suffix: ".scale"
 
-  - name: shared_fp4_to_bf16
-    group: moe_shared_experts
+  - name: linear_fp8_to_bf16
+    group: scaled_non_moe_linear
     when:
-      source_format: fp4_e2m1_e8m0
-    transform: fp4_to_bf16
-
-  - name: scaled_fp8_to_bf16
-    group: scaled_dense
-    when:
-      has_scale: true
+      source_format: fp8_block_e8m0
     transform: fp8_to_bf16
     params:
       block_size: 128
-
-calibration:
-  enabled: false
-  dataset_jsonl: null
-  output_dir: null
-  max_length: 2048
-  batch_size: 1
-  collect:
-    groups:
-      - moe_experts
-    stats:
-      - hessian
-      - act_scales
-

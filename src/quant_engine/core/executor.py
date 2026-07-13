@@ -46,6 +46,7 @@ def _write_quant_manifest(
                 "group_size": group_size,
                 "original_shape": list(action.tensor.shape),
                 "source_format": action.tensor.source_format,
+                "module_kind": action.tensor.module_kind,
                 "rule": action.rule_name,
             }
         elif action.transform in {"fp8_to_bf16", "fp4_to_bf16"}:
@@ -53,6 +54,7 @@ def _write_quant_manifest(
                 "format": "bf16",
                 "original_shape": list(action.tensor.shape),
                 "source_format": action.tensor.source_format,
+                "module_kind": action.tensor.module_kind,
                 "rule": action.rule_name,
             }
 
@@ -137,4 +139,3 @@ def execute_plan(
     report.finish()
     report.save(output / "quant_report.json")
     return report
-

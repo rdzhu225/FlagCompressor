@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -49,6 +50,7 @@ class ExecutionPlan:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "summary": self.summary(),
             "actions": [action.to_dict() for action in self.actions],
             "kept_tensors": [asdict(t) for t in self.kept_tensors],
             "unmatched_quantized_tensors": [asdict(t) for t in self.unmatched_quantized_tensors],
@@ -56,3 +58,13 @@ class ExecutionPlan:
             "transform_counts": self.transform_counts,
         }
 
+    def summary(self) -> dict[str, Any]:
+        return {
+            "action_tensors": len(self.actions),
+            "kept_tensors": len(self.kept_tensors),
+            "unmatched_quantized_tensors": len(self.unmatched_quantized_tensors),
+            "groups": self.group_counts,
+            "transforms": self.transform_counts,
+            "module_kinds": dict(Counter(action.tensor.module_kind or "unknown" for action in self.actions)),
+            "source_formats": dict(Counter(action.tensor.source_format or "unknown" for action in self.actions)),
+        }
