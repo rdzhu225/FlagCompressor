@@ -1,8 +1,11 @@
-# Quant Engine
+# FlagCompressor
 
-`quant_engine` is a lightweight FlagOS quantization deployment tool for turning
-FP8/FP4 HuggingFace safetensors checkpoints into deployable mixed-precision
-artifacts.
+FlagCompressor is a lightweight FlagOS quantization and compression deployment
+tool for turning FP8/FP4 HuggingFace safetensors checkpoints into deployable
+mixed-precision artifacts.
+
+The current implementation package is `quant_engine`, and the installed CLI is
+`quant-engine`. The repository/product name is FlagCompressor.
 
 The default path is checkpoint-only and weight-only:
 
@@ -13,7 +16,7 @@ inspect checkpoint -> classify common linear weights -> plan transforms -> conve
 It does not import `transformers` or require calibration data unless a PTQ/QAT
 workflow asks for model execution.
 
-## What It Supports Now
+## What FlagCompressor Supports Now
 
 - HF `safetensors` checkpoint scanning and shard-safe conversion.
 - Checkpoint-only classification of common linear weights:
@@ -117,6 +120,29 @@ model.safetensors.index.json
 `quant_manifest.json` is the stable artifact ABI for inference integration.
 Inference repositories should only need a thin bridge that parses this manifest,
 loads weights/scales, and calls their current kernel hooks.
+
+## Planned Inference Integration
+
+FlagCompressor currently stops at artifact generation. Runtime loading and
+inference execution of the quantized artifacts is not supported yet.
+
+Status labels used in this README:
+
+```text
+Supported     implemented and tested in this repository
+Experimental  implemented, but validation or integration coverage is limited
+Planned       roadmap item; no runtime support is available yet
+```
+
+Planned inference targets:
+
+| Target | Status | Planned integration contract |
+| --- | --- | --- |
+| `flagos-ai/vllm-plugin-FL` | Planned | Parse `quant_manifest.json`, load packed INT4 weights and BF16 scales, and dispatch dequant/matmul through the vLLM-FL plugin path. |
+| `flagos-ai/sglang-plugin-FL` | Planned | Parse the same artifact ABI, load converted weights/scales, and dispatch through the SGLang-FL plugin path. |
+
+The integration should remain thin: plugin-side code should consume
+`quant_manifest.json` and avoid re-implementing FP4/FP8/INT4 conversion rules.
 
 ## Optional Calibration
 
