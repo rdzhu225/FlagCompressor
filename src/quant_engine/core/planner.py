@@ -1,76 +1,86 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from quant_engine.core.plan import ExecutionPlan
 from quant_engine.core.profile import ModelProfile, TensorInfo
-from quant_engine.core.recipe import Recipe, RuleConfig
-from quant_engine.selectors.matcher import match_group_selector, match_selector
 
 
-def _when_matches(tensor: TensorInfo, rule: RuleConfig) -> bool:
-    if not rule.when:
-        return True
-    source_format = rule.when.get("source_format")
-    if source_format is not None:
-        allowed = source_format if isinstance(source_format, list) else [source_format]
-        if tensor.source_format not in allowed:
-            return False
-    dtype = rule.when.get("dtype")
-    if dtype is not None:
-        allowed = dtype if isinstance(dtype, list) else [dtype]
-        allowed = [str(item).removeprefix("torch.") for item in allowed]
-        if tensor.dtype not in allowed:
-            return False
-    has_scale = rule.when.get("has_scale")
-    if has_scale is not None and bool(tensor.scale_name) != bool(has_scale):
-        return False
-    return True
+TargetMode = Literal["bf16", "moe-int4"]
 
 
-def assign_groups(profile: ModelProfile, recipe: Recipe) -> dict[str, set[str]]:
-    direct_matches: dict[str, set[str]] = {}
-    for group_name, config in recipe.module_groups.items():
-        direct_matches[group_name] = {
-            tensor.name
-            for tensor in profile.tensors.values()
-            if tensor.role != "scale" and match_group_selector(tensor, config)
-        }
-
-    resolved: dict[str, set[str]] = {}
-    for group_name, config in recipe.module_groups.items():
-        names = set(direct_matches[group_name])
-        for excluded in config.get("exclude_groups") or []:
-            names -= direct_matches.get(excluded, set())
-        resolved[group_name] = names
-    return resolved
+def _is_scaled_fp4(tensor: TensorInfo) -> bool:
+    return (
+        tensor.role != "scale"
+        and bool(tensor.scale_name)
+        and tensor.source_format == "fp4_e2m1_e8m0"
+    )
 
 
-def build_plan(profile: ModelProfile, recipe: Recipe) -> ExecutionPlan:
-    groups = assign_groups(profile, recipe)
+def _is_moe_fp4(tensor: TensorInfo) -> bool:
+    return _is_scaled_fp4(tensor) and tensor.module_kind == "moe_mlp_linear"
+
+
+def _is_scaled_fp8(tensor: TensorInfo) -> bool:
+    return (
+        tensor.role != "scale"
+        and bool(tensor.scale_name)
+        and tensor.source_format == "fp8_block_e8m0"
+    )
+
+
+def _add_fp4_to_bf16(plan: ExecutionPlan, tensor: TensorInfo) -> None:
+    plan.add_action(
+        tensor,
+        rule_name="fp4_to_bf16",
+        transform="fp4_to_bf16",
+        group="scaled_fp4",
+    )
+
+
+def _add_fp8_to_bf16(plan: ExecutionPlan, tensor: TensorInfo) -> None:
+    plan.add_action(
+        tensor,
+        rule_name="linear_fp8_to_bf16",
+        transform="fp8_to_bf16",
+        group="scaled_fp8_linear",
+        params={"block_size": 128},
+    )
+
+
+def _add_moe_fp4_to_int4(plan: ExecutionPlan, tensor: TensorInfo) -> None:
+    plan.add_action(
+        tensor,
+        rule_name="moe_fp4_to_int4",
+        transform="fp4_to_int4",
+        group="moe_mlp_linear",
+        quantizer={"name": "mse", "group_size": 32, "n_candidates": 200},
+        output={"scale_suffix": ".scale"},
+    )
+
+
+def build_plan(profile: ModelProfile, target: TargetMode = "bf16") -> ExecutionPlan:
+    """Build the fixed lightweight conversion plan.
+
+    Targets:
+    - bf16: FP8 and FP4 scaled weights are dequantized to BF16.
+    - moe-int4: FP8 is dequantized to BF16, MoE FP4 is quantized to INT4,
+      and any non-MoE FP4 tensors are dequantized to BF16.
+    """
+    if target not in {"bf16", "moe-int4"}:
+        raise ValueError(f"Unsupported target: {target}")
+
     plan = ExecutionPlan()
-    matched_names: set[str] = set()
-
     tensors = [tensor for tensor in profile.tensors.values() if tensor.role != "scale"]
     for tensor in tensors:
-        selected_rule: RuleConfig | None = None
-        selected_group: str | None = None
-        for rule in recipe.rules:
-            in_group = True
-            if rule.group:
-                in_group = tensor.name in groups.get(rule.group, set())
-            selector_ok = match_selector(tensor, rule.selector)
-            if in_group and selector_ok and _when_matches(tensor, rule):
-                selected_rule = rule
-                selected_group = rule.group
-                break
-        if selected_rule:
-            plan.add_action(tensor, selected_rule, selected_group)
-            matched_names.add(tensor.name)
+        if target == "moe-int4" and _is_moe_fp4(tensor):
+            _add_moe_fp4_to_int4(plan, tensor)
+        elif _is_scaled_fp4(tensor):
+            _add_fp4_to_bf16(plan, tensor)
+        elif _is_scaled_fp8(tensor):
+            _add_fp8_to_bf16(plan, tensor)
         else:
             plan.kept_tensors.append(tensor)
             if tensor.element_size == 1 and tensor.scale_name:
                 plan.unmatched_quantized_tensors.append(tensor)
-
-    for group_name, names in groups.items():
-        plan.group_counts.setdefault(group_name, len(names))
     return plan
-

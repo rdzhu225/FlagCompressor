@@ -5,20 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "quant-engine"
 version = "0.1.0"
-description = "Recipe-driven, backend-aware quantization and dtype conversion engine."
+description = "Lightweight FP8/BF16 and FP4-MoE/INT4 checkpoint conversion engine."
 requires-python = ">=3.10"
 dependencies = [
   "torch",
   "safetensors",
-  "PyYAML",
   "tqdm",
 ]
 
-[project.optional-dependencies]
-calibration = [
-  "transformers",
-  "datasets",
-]
 
 [project.scripts]
 quant-engine = "quant_engine.cli.main:main"

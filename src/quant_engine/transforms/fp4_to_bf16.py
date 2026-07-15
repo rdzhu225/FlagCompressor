@@ -25,4 +25,3 @@ class Fp4ToBf16Transform(Transform):
 
 
 register_transform(Fp4ToBf16Transform())
-

@@ -1,112 +1,63 @@
 # FlagCompressor
 
-FlagCompressor is a lightweight FlagOS quantization and compression deployment
-tool for turning FP8/FP4 HuggingFace safetensors checkpoints into deployable
-mixed-precision artifacts.
+FlagCompressor is a lightweight checkpoint conversion tool for FlagOS-style
+mixed FP8/FP4 HuggingFace `safetensors` models.
 
-The current implementation package is `quant_engine`, and the installed CLI is
-`quant-engine`. The repository/product name is FlagCompressor.
+The implementation package is `quant_engine`, and the installed CLI is
+`quant-engine`.
 
-The default path is checkpoint-only and weight-only:
+## Supported Scope
+
+The framework intentionally supports only the current deployment path:
 
 ```text
-inspect checkpoint -> classify common linear weights -> plan transforms -> convert weights -> write manifest/report
+scan HF safetensors -> classify linear weights -> build fixed plan -> convert -> write manifest/report
 ```
 
-It does not import `transformers` or require calibration data unless a PTQ/QAT
-workflow asks for model execution.
+Supported conversions:
 
-## What FlagCompressor Supports Now
+- FP8 block weight + E8M0 scale -> BF16.
+- FP4 E2M1 weight + E8M0 scale -> BF16.
+- Optional MoE expert FP4 E2M1 weight -> packed signed INT4 + BF16 group scale.
+- BF16/FP16/FP32 and unsupported tensors are copied through unchanged.
+- Source scale tensors consumed by supported conversions are removed from output shards.
 
-- HF `safetensors` checkpoint scanning and shard-safe conversion.
-- Checkpoint-only classification of common linear weights:
-  - `attn_linear`
-  - `mlp_linear`
-  - `shared_moe_mlp_linear`
-  - `moe_mlp_linear`
-  - `embedding`
-  - `lm_head`
-- Recipe-based tensor selection.
-- Dry-run plans with group, transform, source-format, and module-kind summaries.
-- FP8 block + E8M0 scale to BF16.
-- MXFP4 E2M1 + E8M0 scale to BF16.
-- MoE expert FP4 to packed signed INT4 + BF16 per-group scale.
-- MSE INT4 weight-only quantization.
-- `quant_manifest.json` and `quant_report.json` outputs.
+The lightweight path does not include YAML recipes, calibration, PTQ/QAT hooks,
+or model-family-specific adapters.
 
-## One-Command Weight Conversion
-
-This command mirrors the standalone `fp4_int4.py` flow:
+## Usage
 
 ```bash
-quant-engine convert-weight-only \
-  --input /path/to/fp8_fp4_model \
-  --output /path/to/output_model \
-  --backend cuda
+quant-engine convert   --input /path/to/fp8_fp4_model   --output /path/to/output_model   --backend cpu
 ```
 
-Built-in routing:
+`--backend cuda` can be used when CUDA is available. The CPU implementation is
+kept as the reference path.
+
+Built-in routing for `--target bf16`:
 
 ```text
-moe_mlp_linear              FP4 -> packed INT4 + BF16 scale
+scaled FP4 tensors          FP4 -> BF16
 attn_linear                 FP8 -> BF16
 mlp_linear                  FP8 -> BF16
 shared_moe_mlp_linear       FP8 -> BF16
-BF16/FP32 tensors           kept as-is
+other tensors               kept as-is
 source scale tensors        removed after conversion
 ```
 
-## Recipe Flow
+Built-in routing for `--target moe-int4`:
 
-Use this when you want to inspect, edit, or review the conversion plan before
-running it:
-
-```bash
-quant-engine inspect \
-  --model /path/to/fp8_fp4_model \
-  --out profile.json \
-  --suggest-recipe recipe.yaml \
-  --output-model /path/to/output_model
-
-quant-engine dry-run --recipe recipe.yaml --out plan.json
-quant-engine convert --recipe recipe.yaml --backend cuda
+```text
+moe_mlp_linear              FP4 -> packed INT4 + BF16 scale
+other scaled FP4 tensors    FP4 -> BF16
+attn_linear                 FP8 -> BF16
+mlp_linear                  FP8 -> BF16
+shared_moe_mlp_linear       FP8 -> BF16
+other tensors               kept as-is
+source scale tensors        removed after conversion
 ```
 
-Users adapt behavior in YAML first:
-
-```yaml
-module_groups:
-  moe_mlp_linear:
-    selector:
-      has_scale: true
-      module_kind: moe_mlp_linear
-
-rules:
-  - name: moe_fp4_to_int4
-    group: moe_mlp_linear
-    when:
-      source_format: fp4_e2m1_e8m0
-    transform: fp4_to_int4
-    quantizer:
-      name: mse
-      group_size: 32
-      n_candidates: 200
-```
-
-## Adaptation Boundary
-
-Keep the lightweight path model-family agnostic:
-
-- Do not add `qwen.py`, `deepseek.py`, `llama.py`, or other model-family
-  adapters for checkpoint scanning.
-- Add only generic tensor-name patterns to
-  `quant_engine.inspect.tensor_classifier` when a new common linear naming
-  convention appears.
-- Prefer recipe selectors and built-in presets for policy changes.
-- Import `transformers` only for calibration, PTQ, QAT, or hook-based workflows
-  that need model execution.
-
-## Artifact Boundary
+## Outputs
 
 Conversion output includes:
 
@@ -117,50 +68,22 @@ model.safetensors.index.json
 *.safetensors
 ```
 
-`quant_manifest.json` is the stable artifact ABI for inference integration.
-Inference repositories should only need a thin bridge that parses this manifest,
-loads weights/scales, and calls their current kernel hooks.
+`quant_manifest.json` is the artifact ABI for inference integration. Runtime
+repositories should parse the manifest, load converted tensors/scales, and call
+their own kernel hooks.
 
-## Planned Inference Integration
+## Adaptation Boundary
 
-FlagCompressor currently stops at artifact generation. Runtime loading and
-inference execution of the quantized artifacts is not supported yet.
+Keep this repository model-family agnostic:
 
-Status labels used in this README:
-
-```text
-Supported     implemented and tested in this repository
-Experimental  implemented, but validation or integration coverage is limited
-Planned       roadmap item; no runtime support is available yet
-```
-
-Planned inference targets:
-
-| Target | Status | Planned integration contract |
-| --- | --- | --- |
-| `flagos-ai/vllm-plugin-FL` | Planned | Parse `quant_manifest.json`, load packed INT4 weights and BF16 scales, and dispatch dequant/matmul through the vLLM-FL plugin path. |
-| `flagos-ai/sglang-plugin-FL` | Planned | Parse the same artifact ABI, load converted weights/scales, and dispatch through the SGLang-FL plugin path. |
-
-The integration should remain thin: plugin-side code should consume
-`quant_manifest.json` and avoid re-implementing FP4/FP8/INT4 conversion rules.
-
-## Optional Calibration
-
-Calibration commands are available for PTQ/QAT work that needs activations or
-Hessian-like statistics:
-
-```bash
-quant-engine build-calib --model-path /path/to/model --output calib.jsonl
-quant-engine calibrate --recipe recipe.yaml --dataset-jsonl calib.jsonl --output calib_stats
-```
-
-These commands require the optional `calibration` dependencies and may import
-`transformers`. They are not part of the default FP4/FP8 weight-only conversion
-path.
+- Add generic tensor-name patterns to `quant_engine.inspect.tensor_classifier`
+  when a new common linear naming convention appears.
+- Keep conversion policy in `quant_engine.core.planner` unless new supported
+  routes are explicitly added.
+- Keep runtime/inference integration outside this package.
 
 ## Current Limitations
 
-- GPTQ/AWQ dispatch points are reserved, but the built-in one-command path uses
-  MSE INT4 today.
-- Real NPU/MLU/XPU kernels are not included yet; CPU/CUDA/generic torch-device
-  execution and fallback are the current path.
+- Only HF `safetensors` checkpoints with `model.safetensors.index.json` are supported.
+- Only CPU/CUDA torch execution paths are exposed.
+- Runtime loading and inference execution of quantized artifacts are not included.

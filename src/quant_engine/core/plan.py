@@ -5,7 +5,6 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from quant_engine.core.profile import TensorInfo
-from quant_engine.core.recipe import RuleConfig
 
 
 @dataclass(frozen=True)
@@ -32,19 +31,29 @@ class ExecutionPlan:
     group_counts: dict[str, int] = field(default_factory=dict)
     transform_counts: dict[str, int] = field(default_factory=dict)
 
-    def add_action(self, tensor: TensorInfo, rule: RuleConfig, group: str | None) -> None:
+    def add_action(
+        self,
+        tensor: TensorInfo,
+        *,
+        rule_name: str,
+        transform: str,
+        group: str | None = None,
+        params: dict[str, Any] | None = None,
+        quantizer: dict[str, Any] | None = None,
+        output: dict[str, Any] | None = None,
+    ) -> None:
         self.actions.append(
             TensorAction(
                 tensor=tensor,
-                rule_name=rule.name,
-                transform=rule.transform,
-                params=rule.params,
-                quantizer=rule.quantizer,
-                output=rule.output,
+                rule_name=rule_name,
+                transform=transform,
+                params=params or {},
+                quantizer=quantizer or {},
+                output=output or {},
                 group=group,
             )
         )
-        self.transform_counts[rule.transform] = self.transform_counts.get(rule.transform, 0) + 1
+        self.transform_counts[transform] = self.transform_counts.get(transform, 0) + 1
         if group:
             self.group_counts[group] = self.group_counts.get(group, 0) + 1
 
