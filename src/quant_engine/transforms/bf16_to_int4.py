@@ -8,8 +8,8 @@ from quant_engine.transforms._int4_common import quantize_to_int4
 from quant_engine.transforms.base import Transform, TransformResult, register_transform
 
 
-class Fp4ToInt4Transform(Transform):
-    name = "fp4_to_int4"
+class Bf16ToInt4Transform(Transform):
+    name = "bf16_to_int4"
 
     def apply(
         self,
@@ -19,10 +19,8 @@ class Fp4ToInt4Transform(Transform):
         backend: QuantBackend,
         context: BackendRunContext,
     ) -> TransformResult:
-        if scale is None:
-            raise ValueError(f"{action.tensor.name} requires a scale tensor for fp4_to_int4")
-        dequant = backend.run("fp4_dequant", weight, scale, context=context)
+        dequant = weight if weight.dtype == torch.bfloat16 else weight.to(torch.bfloat16)
         return quantize_to_int4(action, dequant, backend, context)
 
 
-register_transform(Fp4ToInt4Transform())
+register_transform(Bf16ToInt4Transform())

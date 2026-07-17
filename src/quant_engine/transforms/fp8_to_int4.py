@@ -8,8 +8,8 @@ from quant_engine.transforms._int4_common import quantize_to_int4
 from quant_engine.transforms.base import Transform, TransformResult, register_transform
 
 
-class Fp4ToInt4Transform(Transform):
-    name = "fp4_to_int4"
+class Fp8ToInt4Transform(Transform):
+    name = "fp8_to_int4"
 
     def apply(
         self,
@@ -20,9 +20,10 @@ class Fp4ToInt4Transform(Transform):
         context: BackendRunContext,
     ) -> TransformResult:
         if scale is None:
-            raise ValueError(f"{action.tensor.name} requires a scale tensor for fp4_to_int4")
-        dequant = backend.run("fp4_dequant", weight, scale, context=context)
+            raise ValueError(f"{action.tensor.name} requires a scale tensor for fp8_to_int4")
+        block_size = int(action.params.get("block_size", 128))
+        dequant = backend.run("fp8_dequant", weight, scale, block_size=block_size, context=context)
         return quantize_to_int4(action, dequant, backend, context)
 
 
-register_transform(Fp4ToInt4Transform())
+register_transform(Fp8ToInt4Transform())
