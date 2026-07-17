@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from quant_engine.backends.base import QuantBackend
+from flag_compressor.backends.base import QuantBackend
 
 
 class CudaBackend(QuantBackend):

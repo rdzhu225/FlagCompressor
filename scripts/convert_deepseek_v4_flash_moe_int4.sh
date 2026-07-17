@@ -10,4 +10,4 @@ OUTPUT_DIR="${2:-/share-evpfs/flagos/ready/edithz/DeepSeek-V4-Flash-moe-int4}"
 BACKEND="${BACKEND:-cpu}"
 
 cd "$REPO_DIR"
-PYTHONPATH=src python -m quant_engine.cli.main convert   --input "$INPUT_DIR"   --output "$OUTPUT_DIR"   --target moe-int4   --backend "$BACKEND"
+PYTHONPATH=src python -m flag_compressor.cli.main convert   --input "$INPUT_DIR"   --output "$OUTPUT_DIR"   --target moe-int4   --backend "$BACKEND"

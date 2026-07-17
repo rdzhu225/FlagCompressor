@@ -4,7 +4,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from quant_engine.core.profile import TensorInfo
+from flag_compressor.core.profile import TensorInfo
 
 
 @dataclass(frozen=True)

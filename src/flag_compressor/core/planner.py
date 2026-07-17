@@ -4,8 +4,8 @@ import re
 from collections.abc import Callable, Iterable, Sequence
 from typing import Literal
 
-from quant_engine.core.plan import ExecutionPlan
-from quant_engine.core.profile import ModelProfile, TensorInfo
+from flag_compressor.core.plan import ExecutionPlan
+from flag_compressor.core.profile import ModelProfile, TensorInfo
 
 
 TargetMode = Literal["bf16", "int4", "moe-int4"]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from quant_engine.backends.op_registry import register_op
+from flag_compressor.backends.op_registry import register_op
 
 
 def pack_signed_int4(values: torch.Tensor) -> torch.Tensor:

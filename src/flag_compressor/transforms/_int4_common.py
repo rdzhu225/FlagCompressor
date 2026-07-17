@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import torch
 
-from quant_engine.backends.base import BackendRunContext, QuantBackend
-from quant_engine.core.plan import TensorAction
-from quant_engine.transforms.base import TransformResult
+from flag_compressor.backends.base import BackendRunContext, QuantBackend
+from flag_compressor.core.plan import TensorAction
+from flag_compressor.transforms.base import TransformResult
 
 
 def quantize_to_int4(

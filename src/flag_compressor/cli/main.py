@@ -45,7 +45,7 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
-    from quant_engine.cli import convert
+    from flag_compressor.cli import convert
 
     convert.run(args)
 

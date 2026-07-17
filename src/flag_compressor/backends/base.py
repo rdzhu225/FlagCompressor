@@ -7,8 +7,8 @@ from typing import Any
 
 import torch
 
-from quant_engine.backends.op_registry import GLOBAL_OP_REGISTRY
-from quant_engine.core.report import ConversionReport, OpEvent
+from flag_compressor.backends.op_registry import GLOBAL_OP_REGISTRY
+from flag_compressor.core.report import ConversionReport, OpEvent
 
 
 @dataclass

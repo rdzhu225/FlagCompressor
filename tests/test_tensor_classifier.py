@@ -1,4 +1,4 @@
-from quant_engine.inspect.tensor_classifier import classify_weight_module, infer_source_format
+from flag_compressor.inspect.tensor_classifier import classify_weight_module, infer_source_format
 
 
 def test_classifies_common_checkpoint_linear_weights_without_model_adapter():

@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "quant-engine"
+name = "flag-compressor"
 version = "0.1.0"
-description = "Lightweight FP8/BF16 and FP4-MoE/INT4 checkpoint conversion engine."
+description = "FlagCompressor: model-agnostic FP8/FP4 to BF16/INT4 checkpoint converter."
 requires-python = ">=3.10"
 dependencies = [
   "torch",
@@ -15,7 +15,7 @@ dependencies = [
 
 
 [project.scripts]
-quant-engine = "quant_engine.cli.main:main"
+flag-compressor = "flag_compressor.cli.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

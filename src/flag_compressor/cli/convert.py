@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import warnings
 
-from quant_engine.backends.registry import build_backend
-from quant_engine.core.executor import execute_plan
-from quant_engine.core.planner import build_plan, make_regex_selector
-from quant_engine.inspect.checkpoint_scanner import scan_hf_safetensors
+from flag_compressor.backends.registry import build_backend
+from flag_compressor.core.executor import execute_plan
+from flag_compressor.core.planner import build_plan, make_regex_selector
+from flag_compressor.inspect.checkpoint_scanner import scan_hf_safetensors
 
 
 def _build_int4_selector(args):
@@ -17,8 +17,8 @@ def _build_int4_selector(args):
 
 
 def run(args) -> None:
-    import quant_engine.formats.register  # noqa: F401
-    import quant_engine.transforms.register  # noqa: F401
+    import flag_compressor.formats.register  # noqa: F401
+    import flag_compressor.transforms.register  # noqa: F401
 
     target = args.target
     if target == "moe-int4":

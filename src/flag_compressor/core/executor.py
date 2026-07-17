@@ -8,11 +8,11 @@ import torch
 from safetensors.torch import save_file
 from tqdm import tqdm
 
-from quant_engine.backends.base import BackendRunContext, QuantBackend
-from quant_engine.core.plan import ExecutionPlan, TensorAction
-from quant_engine.core.report import ConversionReport
-from quant_engine.io.hf_checkpoint import HfSafetensorsCheckpoint
-from quant_engine.transforms.base import get_transform
+from flag_compressor.backends.base import BackendRunContext, QuantBackend
+from flag_compressor.core.plan import ExecutionPlan, TensorAction
+from flag_compressor.core.report import ConversionReport
+from flag_compressor.io.hf_checkpoint import HfSafetensorsCheckpoint
+from flag_compressor.transforms.base import get_transform
 
 
 def _build_action_map(plan: ExecutionPlan) -> dict[str, TensorAction]:
@@ -64,7 +64,7 @@ def _write_quant_manifest(
             }
 
     manifest = {
-        "abi_version": "quant_engine.artifact.v1",
+        "abi_version": "flag_compressor.artifact.v1",
         "formats": formats,
         "tensors": tensors,
     }

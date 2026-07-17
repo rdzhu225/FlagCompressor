@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import torch
 
-from quant_engine.backends.op_registry import register_op
-from quant_engine.formats.fp8_e8m0 import decode_e8m0_scale
+from flag_compressor.backends.op_registry import register_op
+from flag_compressor.formats.fp8_e8m0 import decode_e8m0_scale
 
 
 FP4_GROUP_SIZE = 32

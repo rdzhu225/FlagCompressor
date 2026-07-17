@@ -1,6 +1,6 @@
 import torch
 
-from quant_engine.formats.int4_pack import pack_signed_int4, unpack_signed_int4
+from flag_compressor.formats.int4_pack import pack_signed_int4, unpack_signed_int4
 
 
 def test_pack_unpack_signed_int4_roundtrip():

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import torch
 
-from quant_engine.backends.base import BackendRunContext, QuantBackend
-from quant_engine.core.plan import TensorAction
-from quant_engine.transforms._int4_common import quantize_to_int4
-from quant_engine.transforms.base import Transform, TransformResult, register_transform
+from flag_compressor.backends.base import BackendRunContext, QuantBackend
+from flag_compressor.core.plan import TensorAction
+from flag_compressor.transforms._int4_common import quantize_to_int4
+from flag_compressor.transforms.base import Transform, TransformResult, register_transform
 
 
 class Fp4ToInt4Transform(Transform):

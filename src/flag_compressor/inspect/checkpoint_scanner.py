@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from quant_engine.core.dtypes import tensor_dtype_name
-from quant_engine.core.profile import ModelProfile, TensorInfo
-from quant_engine.inspect.scale_pairing import build_scale_map
-from quant_engine.inspect.tensor_classifier import classify_weight_module, infer_source_format
-from quant_engine.io.hf_checkpoint import HfSafetensorsCheckpoint
+from flag_compressor.core.dtypes import tensor_dtype_name
+from flag_compressor.core.profile import ModelProfile, TensorInfo
+from flag_compressor.inspect.scale_pairing import build_scale_map
+from flag_compressor.inspect.tensor_classifier import classify_weight_module, infer_source_format
+from flag_compressor.io.hf_checkpoint import HfSafetensorsCheckpoint
 
 
 def scan_hf_safetensors(model_path: str | Path) -> ModelProfile:

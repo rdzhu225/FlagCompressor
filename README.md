@@ -3,7 +3,7 @@
 FlagCompressor is a lightweight, model-family-agnostic checkpoint conversion
 tool for FlagOS-style mixed FP8/FP4 HuggingFace `safetensors` models.
 
-The installed CLI is `quant-engine`. The Python package is `quant_engine`.
+The installed CLI is `flag-compressor`. The Python package is `flag_compressor`.
 
 ## Supported Scope
 
@@ -34,7 +34,7 @@ INT4 is entirely up to the user via name-based regex selectors.
 Plain FP8/FP4 -> BF16 (works for any FP8/FP4 checkpoint, not just DeepSeek):
 
 ```bash
-quant-engine convert \
+flag-compressor convert \
   --input /path/to/fp8_fp4_model \
   --output /path/to/output_bf16_model \
   --target bf16 \
@@ -47,13 +47,13 @@ against tensor names using `re.search`; repeat the flag to add more patterns.
 
 ```bash
 # DeepSeek V4: only routed MoE expert linears to INT4
-quant-engine convert \
+flag-compressor convert \
   --input /path/to/DSv4 --output /path/to/DSv4-int4 \
   --target int4 \
   --int4-include '.*\.experts\.\d+\.(gate|up|down)_proj\.weight$'
 
 # Qwen dense: full attention + MLP to INT4
-quant-engine convert \
+flag-compressor convert \
   --input /path/to/Qwen --output /path/to/Qwen-int4 \
   --target int4 \
   --int4-include '.*\.(q|k|v|o|gate|up|down)_proj\.weight$'
@@ -102,7 +102,7 @@ call their own kernel hooks.
 
 Keep this repository model-family agnostic:
 
-- Add generic tensor-name patterns to `quant_engine.inspect.tensor_classifier`
+- Add generic tensor-name patterns to `flag_compressor.inspect.tensor_classifier`
   when a new common linear naming convention appears; the classifier's output
   is metadata only and does not drive conversion policy.
 - Which tensors go to INT4 is a user choice expressed via `--int4-include` /
@@ -110,7 +110,7 @@ Keep this repository model-family agnostic:
   the planner.
 - Model-family-specific artifact fixups (for example the DeepSeek V4 sparse
   indexer LayerNorm defaults) live behind an explicit `model_type` check in
-  `quant_engine.core.executor` and only run when the input actually is that
+  `flag_compressor.core.executor` and only run when the input actually is that
   family.
 - Keep runtime/inference integration outside this package.
 

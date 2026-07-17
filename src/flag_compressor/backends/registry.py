@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from quant_engine.backends.base import QuantBackend
-from quant_engine.backends.cpu import CpuBackend
-from quant_engine.backends.cuda import CudaBackend
+from flag_compressor.backends.base import QuantBackend
+from flag_compressor.backends.cpu import CpuBackend
+from flag_compressor.backends.cuda import CudaBackend
 
 
 def build_backend(name: str = "cpu", device: str | None = None, fallback_policy: str = "warn") -> QuantBackend:

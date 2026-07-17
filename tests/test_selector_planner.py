@@ -1,9 +1,9 @@
-from quant_engine.core.planner import (
+from flag_compressor.core.planner import (
     MOE_EXPERT_INCLUDE_PATTERN,
     build_plan,
     make_regex_selector,
 )
-from quant_engine.core.profile import ModelProfile, TensorInfo
+from flag_compressor.core.profile import ModelProfile, TensorInfo
 
 
 def _profile() -> ModelProfile:

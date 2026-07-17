@@ -1,6 +1,6 @@
 import torch
 
-from quant_engine.formats.fp4_e2m1 import unpack_fp4_e2m1
+from flag_compressor.formats.fp4_e2m1 import unpack_fp4_e2m1
 
 
 def test_unpack_fp4_e2m1_low_high_order():

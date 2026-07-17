@@ -5,8 +5,8 @@ from typing import Any
 
 import torch
 
-from quant_engine.backends.base import BackendRunContext, QuantBackend
-from quant_engine.core.plan import TensorAction
+from flag_compressor.backends.base import BackendRunContext, QuantBackend
+from flag_compressor.core.plan import TensorAction
 
 
 @dataclass
