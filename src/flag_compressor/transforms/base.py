@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 import torch
 
@@ -12,7 +11,6 @@ from flag_compressor.core.plan import TensorAction
 @dataclass
 class TransformResult:
     tensors: dict[str, torch.Tensor]
-    generated_scale_names: list[str]
 
 
 class Transform:
@@ -42,4 +40,3 @@ def get_transform(name: str) -> Transform:
         return TRANSFORMS[name]
     except KeyError as exc:
         raise KeyError(f"Unknown transform: {name}") from exc
-

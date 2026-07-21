@@ -1,42 +1,30 @@
-from flag_compressor.inspect.tensor_classifier import classify_weight_module, infer_source_format
+from flag_compressor.inspect.tensor_classifier import infer_source_format
 
 
-def test_classifies_common_checkpoint_linear_weights_without_model_adapter():
-    assert (
-        classify_weight_module("model.layers.0.self_attn.q_proj.weight")
-        == "attn_linear"
-    )
-    assert (
-        classify_weight_module("model.layers.0.mlp.down_proj.weight")
-        == "mlp_linear"
-    )
-    assert (
-        classify_weight_module("model.layers.0.mlp.experts.12.gate_proj.weight")
-        == "moe_mlp_linear"
-    )
-    assert (
-        classify_weight_module("model.layers.0.mlp.shared_experts.down_proj.weight")
-        == "shared_moe_mlp_linear"
-    )
-    assert classify_weight_module("model.embed_tokens.weight") == "embedding"
+def test_no_scale_returns_none():
+    assert infer_source_format((16, 32), element_size=2, scale_shape=None) is None
+    assert infer_source_format((16, 32), element_size=1, scale_shape=None) is None
 
 
-def test_moe_mlp_linear_scaled_byte_weight_is_inferred_as_fp4():
+def test_multibyte_weight_returns_none():
+    assert infer_source_format((16, 32), element_size=2, scale_shape=(16, 1)) is None
+
+
+def test_byte_weight_with_per_row_2d_scale_is_fp4():
+    # MXFP4 typical layout: same number of rows as weight, one scale per group along cols.
     assert (
-        infer_source_format(
-            "model.layers.0.mlp.experts.0.gate_proj.weight",
-            element_size=1,
-            scale_name="model.layers.0.mlp.experts.0.gate_proj.scale",
-            module_kind="moe_mlp_linear",
-        )
+        infer_source_format((128, 32), element_size=1, scale_shape=(128, 1))
         == "fp4_e2m1_e8m0"
     )
+
+
+def test_byte_weight_with_block_scale_is_fp8():
+    # Block-FP8 typical layout: a scale block per 128x128 tile.
     assert (
-        infer_source_format(
-            "model.layers.0.self_attn.q_proj.weight",
-            element_size=1,
-            scale_name="model.layers.0.self_attn.q_proj.scale",
-            module_kind="attn_linear",
-        )
+        infer_source_format((256, 512), element_size=1, scale_shape=(2, 4))
+        == "fp8_block_e8m0"
+    )
+    assert (
+        infer_source_format((256, 512), element_size=1, scale_shape=(8,))
         == "fp8_block_e8m0"
     )

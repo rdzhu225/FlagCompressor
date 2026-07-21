@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "flag-compressor"
 version = "0.1.0"
-description = "FlagCompressor: model-agnostic FP8/FP4 to BF16/INT4 checkpoint converter."
+description = "FlagCompressor: model-agnostic FP8/FP4 to BF16 checkpoint dequantizer."
 requires-python = ">=3.10"
 dependencies = [
   "torch",

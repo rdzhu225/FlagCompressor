@@ -21,7 +21,7 @@ class Fp4ToBf16Transform(Transform):
         if scale is None:
             raise ValueError(f"{action.tensor.name} requires a scale tensor for fp4_to_bf16")
         result = backend.run("fp4_dequant", weight, scale, context=context)
-        return TransformResult(tensors={action.tensor.name: result.cpu()}, generated_scale_names=[])
+        return TransformResult(tensors={action.tensor.name: result.cpu()})
 
 
 register_transform(Fp4ToBf16Transform())
