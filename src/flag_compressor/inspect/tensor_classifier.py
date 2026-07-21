@@ -1,12 +1,68 @@
 from __future__ import annotations
 
 
-def infer_source_format(
+ATTENTION_LINEAR_NAMES = {
+    "q_proj", "k_proj", "v_proj", "o_proj", "out_proj", "query", "key",
+    "value", "dense", "c_attn", "c_proj", "qkv_proj", "query_key_value",
+    "wq", "wk", "wv", "wo", "wq_a", "wq_b", "wkv_a", "wkv_b",
+    "kv_a_proj_with_mqa", "kv_b_proj", "q_a_proj", "q_b_proj",
+}
+
+MLP_LINEAR_NAMES = {
+    "gate_proj", "up_proj", "down_proj", "fc1", "fc2", "w1", "w2", "w3",
+    "dense_h_to_4h", "dense_4h_to_h",
+}
+
+
+def classify_weight(name: str) -> tuple[str | None, tuple[str, ...]]:
+    """Classify common linear weights without making conversion decisions."""
+    if not name.endswith(".weight"):
+        return None, ()
+    parts = name[: -len(".weight")].lower().split(".")
+    leaf = parts[-1]
+    tags: set[str] = set()
+
+    shared_parts = {"shared_expert", "shared_experts"}
+    is_shared = any(part in shared_parts for part in parts)
+    is_routed = "experts" in parts and not is_shared
+    is_mlp_linear = leaf in MLP_LINEAR_NAMES
+    is_attention_linear = leaf in ATTENTION_LINEAR_NAMES
+
+    if is_mlp_linear or is_attention_linear:
+        tags.add("linear")
+    if is_routed and is_mlp_linear:
+        tags.update({"moe", "moe.routed"})
+        return "moe_routed_linear", tuple(sorted(tags))
+    if is_shared and is_mlp_linear:
+        tags.update({"moe", "moe.shared"})
+        return "moe_shared_linear", tuple(sorted(tags))
+    if is_attention_linear:
+        tags.add("attention")
+        return "attention_linear", tuple(sorted(tags))
+    if is_mlp_linear:
+        tags.add("mlp")
+        return "mlp_linear", tuple(sorted(tags))
+    if leaf == "lm_head":
+        return "lm_head", ("lm_head",)
+    if leaf in {"embed_tokens", "embedding", "word_embeddings"}:
+        return "embedding", ("embedding",)
+    return None, ()
+
+
+def infer_logical_shape(
+    storage_shape: tuple[int, ...], storage_format: str | None
+) -> tuple[int, ...]:
+    if storage_format == "fp4_e2m1_e8m0" and len(storage_shape) == 2:
+        return (storage_shape[0], storage_shape[1] * 2)
+    return storage_shape
+
+
+def infer_storage_format(
     weight_shape: tuple[int, ...],
     element_size: int,
     scale_shape: tuple[int, ...] | None,
 ) -> str | None:
-    """Infer the source quantization format from tensor shapes only.
+    """Infer a source quantization format using strict layout validation.
 
     A byte-sized weight paired with a same-rows 2D scale is treated as
     MXFP4 E2M1 + E8M0 (per-row groups). A byte-sized weight paired with a
@@ -18,6 +74,23 @@ def infer_source_format(
         return None
     if len(weight_shape) != 2:
         return None
-    if len(scale_shape) == 2 and scale_shape[0] == weight_shape[0]:
+    # MXFP4 stores two values per weight byte and one scale per 32 logical
+    # values. Merely checking that rows match would misclassify row-wise INT8.
+    if (
+        len(scale_shape) == 2
+        and scale_shape[0] == weight_shape[0]
+        and scale_shape[1] > 0
+        and weight_shape[1] * 2 == scale_shape[1] * 32
+    ):
         return "fp4_e2m1_e8m0"
-    return "fp8_block_e8m0"
+
+    # Block FP8 has one scale per padded 128x128 tile. Flat scale tensors are
+    # accepted when their element count is exact.
+    rows, cols = weight_shape
+    expected_scales = ((rows + 127) // 128) * ((cols + 127) // 128)
+    scale_elements = 1
+    for dim in scale_shape:
+        scale_elements *= dim
+    if scale_elements == expected_scales:
+        return "fp8_block_e8m0"
+    return None

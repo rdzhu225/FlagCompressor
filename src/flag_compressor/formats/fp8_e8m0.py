@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import torch
 
+from flag_compressor.backends.base import BackendRunContext, QuantBackend
 from flag_compressor.backends.op_registry import register_op
+from flag_compressor.formats.base import WeightFormat, register_weight_format
 
 
 def decode_e8m0_scale(scale: torch.Tensor) -> torch.Tensor:
@@ -56,3 +58,27 @@ register_op("e8m0_decode", "torch")(decode_e8m0_scale)
 register_op("fp8_dequant", "cpu")(block_fp8_dequant)
 register_op("fp8_dequant", "torch")(block_fp8_dequant)
 
+
+class Fp8BlockE8M0Format(WeightFormat):
+    name = "fp8_block_e8m0"
+
+    def to_canonical(
+        self,
+        weight: torch.Tensor,
+        scale: torch.Tensor | None,
+        backend: QuantBackend,
+        context: BackendRunContext,
+        params: dict,
+    ) -> torch.Tensor:
+        if scale is None:
+            raise ValueError("Block FP8 input requires an E8M0 scale tensor")
+        return backend.run(
+            "fp8_dequant",
+            weight,
+            scale,
+            block_size=int(params.get("block_size", 128)),
+            context=context,
+        )
+
+
+register_weight_format(Fp8BlockE8M0Format())

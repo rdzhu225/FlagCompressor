@@ -14,7 +14,14 @@ class TensorInfo:
     element_size: int
     scale_name: str | None = None
     role: str = "weight"
-    source_format: str | None = None
+    storage_format: str | None = None
+    logical_shape: tuple[int, ...] | None = None
+    module_kind: str | None = None
+    tags: tuple[str, ...] = ()
+
+    @property
+    def effective_logical_shape(self) -> tuple[int, ...]:
+        return self.logical_shape or self.shape
 
 
 @dataclass
@@ -41,7 +48,8 @@ class ModelProfile:
             "weight_tensors": len(weights),
             "scale_tensors": sum(1 for tensor in self.tensors.values() if tensor.role == "scale"),
             "scaled_weight_tensors": len(scaled_weights),
-            "source_formats": dict(Counter(tensor.source_format or "unknown" for tensor in scaled_weights)),
+            "storage_formats": dict(Counter(tensor.storage_format or "unknown" for tensor in scaled_weights)),
+            "module_kinds": dict(Counter(tensor.module_kind or "unknown" for tensor in weights)),
         }
 
     @classmethod
@@ -60,7 +68,14 @@ class ModelProfile:
                 element_size=int(item["element_size"]),
                 scale_name=item.get("scale_name"),
                 role=item.get("role", "weight"),
-                source_format=item.get("source_format"),
+                storage_format=item.get("storage_format", item.get("source_format")),
+                logical_shape=(
+                    tuple(item["logical_shape"])
+                    if item.get("logical_shape") is not None
+                    else None
+                ),
+                module_kind=item.get("module_kind"),
+                tags=tuple(item.get("tags") or ()),
             )
             for name, item in (data.get("tensors") or {}).items()
         }

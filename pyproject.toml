@@ -5,12 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "flag-compressor"
 version = "0.1.0"
-description = "FlagCompressor: model-agnostic FP8/FP4 to BF16 checkpoint dequantizer."
+description = "FlagCompressor: model-agnostic checkpoint conversion and INT4 quantization."
 requires-python = ">=3.10"
 dependencies = [
   "torch",
   "safetensors",
   "tqdm",
+  "PyYAML",
 ]
 
 
@@ -20,3 +21,5 @@ flag-compressor = "flag_compressor.cli.main:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.pytest.ini_options]
+pythonpath = ["src"]

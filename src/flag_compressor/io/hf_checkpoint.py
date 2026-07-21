@@ -53,11 +53,19 @@ class HfSafetensorsCheckpoint:
                     shutil.rmtree(target)
                 shutil.copytree(item, target)
 
-    def write_index(self, output_path: str | Path, weight_map: dict[str, str]) -> None:
+    def write_index(
+        self,
+        output_path: str | Path,
+        weight_map: dict[str, str],
+        *,
+        total_size: int | None = None,
+    ) -> None:
+        metadata = dict(self.index.get("metadata", {}))
+        if total_size is not None:
+            metadata["total_size"] = total_size
         new_index = {
-            "metadata": self.index.get("metadata", {}),
+            "metadata": metadata,
             "weight_map": weight_map,
         }
         with (Path(output_path) / SAFETENSORS_INDEX).open("w", encoding="utf-8") as f:
             json.dump(new_index, f, indent=2)
-

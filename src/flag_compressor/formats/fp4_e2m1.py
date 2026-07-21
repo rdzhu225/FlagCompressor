@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import torch
 
+from flag_compressor.backends.base import BackendRunContext, QuantBackend
 from flag_compressor.backends.op_registry import register_op
+from flag_compressor.formats.base import WeightFormat, register_weight_format
 from flag_compressor.formats.fp8_e8m0 import decode_e8m0_scale
 
 
@@ -72,3 +74,22 @@ register_op("fp4_unpack", "torch")(unpack_fp4_e2m1)
 register_op("fp4_dequant", "cpu")(dequant_fp4_e2m1)
 register_op("fp4_dequant", "torch")(dequant_fp4_e2m1)
 
+
+class Fp4E2M1E8M0Format(WeightFormat):
+    name = "fp4_e2m1_e8m0"
+
+    def to_canonical(
+        self,
+        weight: torch.Tensor,
+        scale: torch.Tensor | None,
+        backend: QuantBackend,
+        context: BackendRunContext,
+        params: dict,
+    ) -> torch.Tensor:
+        del params
+        if scale is None:
+            raise ValueError("FP4 E2M1 input requires an E8M0 scale tensor")
+        return backend.run("fp4_dequant", weight, scale, context=context)
+
+
+register_weight_format(Fp4E2M1E8M0Format())
