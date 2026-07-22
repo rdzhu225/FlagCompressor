@@ -83,6 +83,33 @@ exclude:
 other_weights: bf16
 ```
 
+Recipe fields:
+
+- `version` (int): recipe schema version. Currently `1`; any other value is rejected.
+- `format` (str): output weight format. Only `int4` is currently accepted.
+- `method` (str): quantizer method. Only `mse` is currently accepted.
+- `group_size` (int, default `32`): group size along the input-feature axis for
+  INT4 scales. Same as CLI `--group-size`.
+- `n_candidates` (int, default `200`): number of candidate scales searched per
+  group by the MSE quantizer. Same as CLI `--n-candidates`.
+- `chunk_size` (int, default `4096`): output-feature chunk size used to bound
+  peak memory during search. Same as CLI `--chunk-size`.
+- `select` (list): tensors to quantize. Each entry is either a built-in group
+  name (`moe`, `moe.routed`, `moe.shared`, `attention`, `mlp`, `linear`) or a
+  mapping `{name: 'REGEX'}`. Mirrors `--select` / `--select-name`.
+- `exclude` (list): tensors to skip, same shape as `select`. Applied on top of
+  the `select` set. Mirrors `--exclude` / `--exclude-name`.
+- `other_weights` (str, default `bf16`): how to handle tensors not selected for
+  INT4. `bf16` dequantizes low-precision weights to BF16 and passes plain FP
+  weights through; `keep` leaves them in their original storage format.
+
+CLI flags and recipe fields are additive: `select` / `exclude` entries from the
+recipe are merged with the corresponding CLI flags, and scalar fields
+(`method`, `group_size`, `n_candidates`, `chunk_size`, `other_weights`,
+`format`) take the CLI value when provided, otherwise fall back to the recipe,
+otherwise to the default. At least one selector (via CLI or recipe) is
+required.
+
 Run it with:
 
 ```bash
