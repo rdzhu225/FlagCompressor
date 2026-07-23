@@ -19,7 +19,10 @@ def run(args) -> None:
     profile = scan_hf_safetensors(args.input)
     plan = build_quantize_plan(profile, policy)
     ensure_no_unmatched(plan)
-    int4_count = plan.output_format_counts.get("int4_symmetric_groupwise", 0)
+    int4_count = plan.output_format_counts.get(
+        "compressed_tensors_int4_groupwise",
+        0,
+    )
     if int4_count == 0:
         raise RuntimeError("The INT4 selectors did not match any supported tensors")
     if args.dry_run:
@@ -34,5 +37,5 @@ def run(args) -> None:
     print(f"INT4 tensors: {int4_count}")
     print(f"Converted tensors: {report.converted}")
     print(f"Kept tensors: {report.kept}")
-    print(f"Manifest: {args.output}/quant_manifest.json")
+    print(f"Manifest: {args.output}/quantization_manifest.json")
     print(f"Report: {args.output}/quantization_report.json")

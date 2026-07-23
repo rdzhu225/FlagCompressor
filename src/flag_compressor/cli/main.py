@@ -30,7 +30,6 @@ def build_parser() -> argparse.ArgumentParser:
     quantize.add_argument("--input", required=True)
     quantize.add_argument("--output", required=True)
     quantize.add_argument("--recipe")
-    quantize.add_argument("--format", choices=["int4"], default=None)
     quantize.add_argument("--select", action="append", choices=sorted(BUILTIN_SELECTIONS))
     quantize.add_argument("--exclude", action="append", choices=sorted(BUILTIN_SELECTIONS))
     quantize.add_argument("--select-name", action="append", metavar="REGEX")
@@ -39,7 +38,6 @@ def build_parser() -> argparse.ArgumentParser:
     quantize.add_argument("--group-size", type=int, default=None)
     quantize.add_argument("--n-candidates", type=int, default=None)
     quantize.add_argument("--chunk-size", type=int, default=None)
-    quantize.add_argument("--other-weights", choices=["bf16", "keep"], default=None)
     quantize.add_argument("--dry-run", action="store_true")
     _add_backend_args(quantize)
 
@@ -50,6 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     validate = subparsers.add_parser("validate", help="Validate a converted or quantized artifact.")
     validate.add_argument("--input", required=True)
     validate.add_argument("--json", action="store_true")
+
     return parser
 
 

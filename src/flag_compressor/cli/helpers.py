@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from flag_compressor.core.plan import ExecutionPlan
-from flag_compressor.core.policy import QuantizationPolicy
+from flag_compressor.core.policy import QuantizationPolicy, UnselectedWeightsPolicy
 
 
 def print_plan(plan: ExecutionPlan) -> None:
@@ -39,8 +39,14 @@ def load_quantize_recipe(path: str | Path) -> dict:
     if not isinstance(data, dict):
         raise ValueError("Quantize recipe must be a YAML mapping")
     allowed = {
-        "version", "format", "method", "group_size", "n_candidates", "chunk_size",
-        "select", "exclude", "other_weights",
+        "version",
+        "method",
+        "group_size",
+        "n_candidates",
+        "chunk_size",
+        "select",
+        "exclude",
+        "unselected",
     }
     unknown = sorted(set(data) - allowed)
     if unknown:
@@ -63,11 +69,27 @@ def _parse_selector_items(items) -> tuple[list[str], list[str]]:
     return groups, names
 
 
+def _parse_unselected_policy(value) -> UnselectedWeightsPolicy:
+    if value is None:
+        return UnselectedWeightsPolicy()
+    if not isinstance(value, dict):
+        raise ValueError("unselected must be a mapping")
+    unknown = sorted(set(value) - {"strategy", "format"})
+    if unknown:
+        raise ValueError(f"Unknown unselected keys: {', '.join(unknown)}")
+    strategy = value.get("strategy", "convert")
+    target_format = value.get(
+        "format",
+        None if strategy == "preserve" else "bf16",
+    )
+    return UnselectedWeightsPolicy(
+        strategy=strategy,
+        format=target_format,
+    )
+
+
 def build_quantization_policy(args) -> QuantizationPolicy:
     recipe = load_quantize_recipe(args.recipe) if args.recipe else {}
-    requested_format = getattr(args, "format", None) or recipe.get("format", "int4")
-    if requested_format != "int4":
-        raise ValueError("Only format: int4 is currently supported")
 
     recipe_groups, recipe_names = _parse_selector_items(recipe.get("select"))
     exclude_groups, recipe_excludes = _parse_selector_items(recipe.get("exclude"))
@@ -79,7 +101,7 @@ def build_quantization_policy(args) -> QuantizationPolicy:
         raise ValueError("No INT4 weights selected; use --select/--select-name or a recipe")
 
     def value(name: str, default):
-        cli_value = getattr(args, name)
+        cli_value = getattr(args, name, None)
         return cli_value if cli_value is not None else recipe.get(name, default)
 
     return QuantizationPolicy(
@@ -91,7 +113,7 @@ def build_quantization_policy(args) -> QuantizationPolicy:
         group_size=int(value("group_size", 32)),
         n_candidates=int(value("n_candidates", 200)),
         chunk_size=int(value("chunk_size", 4096)),
-        other_weights=value("other_weights", "bf16"),
+        unselected=_parse_unselected_policy(recipe.get("unselected")),
     )
 
 

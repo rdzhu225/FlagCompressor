@@ -6,9 +6,11 @@ from pathlib import Path
 from tqdm import tqdm
 
 from flag_compressor.backends.base import BackendRunContext, QuantBackend
+from flag_compressor.core.compressed_tensors import build_compressed_tensors_config
 from flag_compressor.core.plan import ExecutionPlan, TensorAction
 from flag_compressor.core.report import ConversionReport
 from flag_compressor.formats.base import get_weight_format
+from flag_compressor.formats.compressed_tensors import compressed_tensor_names
 from flag_compressor.io.hf_checkpoint import HfSafetensorsCheckpoint
 
 
@@ -26,7 +28,6 @@ _STRIP_CONFIG_KEYS = (
     "quant_method",
 )
 
-_INT4_FORMATS = {"int4_symmetric_groupwise"}
 _BF16_FORMATS = {"bf16"}
 
 
@@ -55,44 +56,89 @@ def _patch_bf16_config(output_path: Path) -> None:
         json.dump(config, f, indent=2, ensure_ascii=False)
 
 
-def _patch_mixed_config(output_path: Path) -> None:
-    """Remove stale source quantization claims from a custom mixed artifact."""
+def _logical_weight_names(plan: ExecutionPlan) -> set[str]:
+    return {
+        tensor.name
+        for tensor in (
+            [action.tensor for action in plan.actions] + plan.kept_tensors
+        )
+        if tensor.role == "weight" and tensor.name.endswith(".weight")
+    }
+
+
+def _patch_compressed_tensors_config(
+    output_path: Path,
+    plan: ExecutionPlan,
+) -> dict:
     config_path = output_path / "config.json"
     if not config_path.exists():
-        return
+        raise FileNotFoundError(
+            "compressed-tensors export requires config.json in the source checkpoint"
+        )
     with config_path.open("r", encoding="utf-8") as f:
         config = json.load(f)
+
+    selected = {
+        action.tensor.name
+        for action in plan.actions
+        if action.output_format.name == "compressed_tensors_int4_groupwise"
+    }
+    group_sizes = {
+        int(action.output_format.params.get("group_size", 32))
+        for action in plan.actions
+        if action.output_format.name == "compressed_tensors_int4_groupwise"
+    }
+    if len(group_sizes) != 1:
+        raise ValueError(
+            "A compressed-tensors config group requires one group size; "
+            f"found {sorted(group_sizes)}"
+        )
+    quantization_config = build_compressed_tensors_config(
+        _logical_weight_names(plan),
+        selected,
+        group_size=next(iter(group_sizes)),
+    )
+
     config["torch_dtype"] = "bfloat16"
     for key in (*_STRIP_CONFIG_KEYS, "expert_dtype"):
         config.pop(key, None)
+    config["quantization_config"] = quantization_config
     with config_path.open("w", encoding="utf-8") as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
+    return quantization_config
 
 
-def _write_quant_manifest(
+def _write_quantization_manifest(
     output_path: Path,
     plan: ExecutionPlan,
-    generated_scale_map: dict[str, str],
+    quantization_config: dict,
 ) -> None:
     tensors: dict[str, dict] = {}
     for action in plan.actions:
         tensor = action.tensor
-        if action.output_format.name in _INT4_FORMATS:
+        if action.output_format.name == "compressed_tensors_int4_groupwise":
             logical_shape = tensor.effective_logical_shape
             group_size = int(action.output_format.params.get("group_size", 32))
-            tensors[tensor.name] = {
-                "format": "int4_symmetric_groupwise",
+            names = compressed_tensor_names(tensor.name)
+            tensors[names.weight] = {
+                "logical_name": tensor.name,
+                "format": "compressed-tensors-pack-quantized-int4",
                 "input_format": action.input_format.name,
-                "storage_dtype": "uint8",
-                "storage_shape": [logical_shape[0], logical_shape[1] // 2],
+                "storage_dtype": "int32",
+                "storage_shape": [logical_shape[0], logical_shape[1] // 8],
                 "logical_shape": list(logical_shape),
-                "scale": generated_scale_map[tensor.name],
-                "scale_shape": [logical_shape[0], logical_shape[1] // group_size],
+                "scale": names.scale,
+                "scale_shape": [
+                    logical_shape[0],
+                    logical_shape[1] // group_size,
+                ],
+                "shape": names.shape,
                 "group_size": group_size,
                 "rule": action.rule_name,
             }
         elif action.output_format.name in _BF16_FORMATS:
             tensors[tensor.name] = {
+                "logical_name": tensor.name,
                 "format": "bf16",
                 "input_format": action.input_format.name,
                 "storage_dtype": "bfloat16",
@@ -101,48 +147,41 @@ def _write_quant_manifest(
                 "rule": action.rule_name,
             }
 
-    # When the user keeps non-selected source weights, include their source
-    # layouts so a runtime adapter does not need to guess a mixed artifact.
     for tensor in plan.kept_tensors:
-        if tensor.storage_format and tensor.scale_name:
+        if tensor.role == "weight":
             tensors[tensor.name] = {
-                "format": tensor.storage_format,
+                "logical_name": tensor.name,
+                "format": tensor.storage_format or tensor.dtype,
                 "storage_dtype": tensor.dtype,
                 "storage_shape": list(tensor.shape),
                 "logical_shape": list(tensor.effective_logical_shape),
-                "scale": tensor.scale_name,
                 "kept_from_source": True,
             }
 
     manifest = {
-        "abi_version": "flag_compressor.artifact.v1",
-        "artifact_kind": "mixed_int4",
-        "formats": {
-            "int4_symmetric_groupwise": {
-                "bits": 4,
-                "signed": True,
-                "storage_dtype": "uint8",
-                "pack_order": "low_even_high_odd",
-                "scale_dtype": "bfloat16",
-                "scale_layout": "row_group",
-                "zero_point": False,
-            },
-            "bf16": {"storage_dtype": "bfloat16"},
-            "fp4_e2m1_e8m0": {
-                "storage_dtype": "uint8",
-                "pack_order": "low_even_high_odd",
-                "scale_dtype": "e8m0",
-                "scale_layout": "row_group",
-            },
-            "fp8_block_e8m0": {
-                "storage_dtype": "float8",
-                "block_size": 128,
-                "scale_dtype": "e8m0",
-            },
+        "schema": "flag-compressor.provenance.v1",
+        "producer": {"name": "FlagCompressor"},
+        "algorithm": plan.metadata.get("algorithm", {}),
+        "artifact": {
+            "format": "compressed-tensors",
+            "compression_format": "pack-quantized",
+            "weight_encoding": "uint4b8",
+            "pack_dtype": "int32",
+            "pack_axis": "input",
+            "values_per_word": 8,
+            "scale_dtype": "bfloat16",
+            "scale_layout": "row_group",
+        },
+        "unselected_weights": plan.metadata.get("unselected_weights", {}),
+        "runtime_config": {
+            "quant_method": quantization_config["quant_method"],
+            "config_groups": list(quantization_config["config_groups"]),
         },
         "tensors": tensors,
     }
-    with (output_path / "quant_manifest.json").open("w", encoding="utf-8") as f:
+    with (output_path / "quantization_manifest.json").open(
+        "w", encoding="utf-8"
+    ) as f:
         json.dump(manifest, f, indent=2, ensure_ascii=False)
 
 
@@ -158,14 +197,18 @@ def execute_plan(
         raise ValueError("Input and output checkpoint directories must be different")
     output.mkdir(parents=True, exist_ok=True)
     checkpoint.copy_auxiliary_files(output)
-    manifest_path = output / "quant_manifest.json"
-    if manifest_path.exists():
-        manifest_path.unlink()
+    for manifest_name in (
+        "quant_manifest.json",
+        "quantization_manifest.json",
+    ):
+        manifest_path = output / manifest_name
+        if manifest_path.exists():
+            manifest_path.unlink()
 
     action_map = _build_action_map(plan)
     old_scale_names = _build_scale_names(plan)
     generated_tensor_locations: dict[str, str] = {}
-    generated_scale_map: dict[str, str] = {}
+    output_tensor_locations: dict[str, str] = {}
     report = ConversionReport(backend=backend.name)
     context = BackendRunContext(report=report)
 
@@ -212,6 +255,8 @@ def execute_plan(
                 action.output_format.params,
             )
             new_state.update(result.tensors)
+            for output_name in result.tensors:
+                output_tensor_locations[output_name] = shard_name
             report.converted += 1
             for generated_name in result.generated_tensor_names:
                 if generated_name in checkpoint.weight_map and generated_name not in old_scale_names:
@@ -219,8 +264,6 @@ def execute_plan(
                         f"Generated tensor {generated_name!r} collides with an existing tensor"
                     )
                 generated_tensor_locations[generated_name] = shard_name
-                generated_scale_map[tensor_name] = generated_name
-
         total_size += sum(item.numel() * item.element_size() for item in new_state.values())
 
         checkpoint.save_shard(output, shard_name, new_state)
@@ -228,16 +271,18 @@ def execute_plan(
             oldest = next(iter(loaded_shards))
             del loaded_shards[oldest]
 
+    replaced_input_names = {action.tensor.name for action in plan.actions}
     new_weight_map = {
         name: shard
         for name, shard in checkpoint.weight_map.items()
-        if name not in old_scale_names
+        if name not in old_scale_names and name not in replaced_input_names
     }
-    new_weight_map.update(generated_tensor_locations)
+    new_weight_map.update(output_tensor_locations)
     checkpoint.write_index(output, new_weight_map, total_size=total_size)
-    if plan.metadata.get("artifact_kind") == "mixed_int4":
-        _patch_mixed_config(output)
-        _write_quant_manifest(output, plan, generated_scale_map)
+    artifact_kind = plan.metadata.get("artifact_kind")
+    if artifact_kind == "compressed_tensors":
+        quantization_config = _patch_compressed_tensors_config(output, plan)
+        _write_quantization_manifest(output, plan, quantization_config)
     else:
         _patch_bf16_config(output)
     report.output_tensors = len(new_weight_map)
@@ -252,7 +297,7 @@ def execute_plan(
     report.finish()
     report_filename = (
         "quantization_report.json"
-        if plan.metadata.get("artifact_kind") == "mixed_int4"
+        if artifact_kind == "compressed_tensors"
         else "conversion_report.json"
     )
     report.extras["report_file"] = report_filename

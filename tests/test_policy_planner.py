@@ -1,7 +1,7 @@
 import pytest
 
 from flag_compressor.core.planner import build_quantize_plan
-from flag_compressor.core.policy import QuantizationPolicy
+from flag_compressor.core.policy import QuantizationPolicy, UnselectedWeightsPolicy
 from flag_compressor.core.profile import ModelProfile, TensorInfo
 
 
@@ -43,21 +43,32 @@ def _profile():
 def test_moe_selection_includes_routed_and_shared():
     plan = build_quantize_plan(_profile(), QuantizationPolicy(selections=("moe",)))
     assert plan.input_format_counts == {"fp4_e2m1_e8m0": 1, "bf16": 1}
-    assert plan.output_format_counts == {"int4_symmetric_groupwise": 2}
+    assert plan.output_format_counts == {
+        "compressed_tensors_int4_groupwise": 2
+    }
     assert len(plan.kept_tensors) == 1
 
 
 def test_regex_can_select_arbitrary_linear():
     policy = QuantizationPolicy(include_names=(r"self_attn\.o_proj\.weight$",))
     plan = build_quantize_plan(_profile(), policy)
-    assert plan.output_format_counts["int4_symmetric_groupwise"] == 1
+    assert plan.output_format_counts["compressed_tensors_int4_groupwise"] == 1
     assert plan.output_format_counts["bf16"] == 1
 
 
 def test_builtin_exclude_removes_shared_experts():
     policy = QuantizationPolicy(selections=("moe",), exclude_selections=("moe.shared",))
     plan = build_quantize_plan(_profile(), policy)
-    assert plan.output_format_counts["int4_symmetric_groupwise"] == 1
+    assert plan.output_format_counts["compressed_tensors_int4_groupwise"] == 1
+
+
+def test_preserve_policy_has_an_explicit_runtime_contract_boundary():
+    policy = QuantizationPolicy(
+        selections=("moe",),
+        unselected=UnselectedWeightsPolicy(strategy="preserve", format=None),
+    )
+    with pytest.raises(ValueError, match="runtime config exporter"):
+        build_quantize_plan(_profile(), policy)
 
 
 def test_selected_shape_must_align_to_group_size():

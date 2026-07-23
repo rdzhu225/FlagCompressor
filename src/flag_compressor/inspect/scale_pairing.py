@@ -3,6 +3,7 @@ from __future__ import annotations
 
 DEFAULT_SCALE_SUFFIXES = (
     ".scale",
+    ".weight_scale",
     ".weight_scale_inv",
     "_scale_inv",
     ".scales",
@@ -10,6 +11,8 @@ DEFAULT_SCALE_SUFFIXES = (
 
 
 def infer_weight_name_from_scale(scale_name: str) -> str | None:
+    if scale_name.endswith(".weight_scale"):
+        return scale_name[: -len(".weight_scale")] + ".weight_packed"
     if scale_name.endswith(".weight_scale_inv"):
         return scale_name[: -len(".weight_scale_inv")] + ".weight"
     if scale_name.endswith("_scale_inv"):
@@ -34,4 +37,3 @@ def build_scale_map(weight_names: set[str]) -> dict[str, str]:
         if inferred and inferred in weight_names:
             scale_map[inferred] = name
     return scale_map
-

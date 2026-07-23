@@ -19,18 +19,23 @@ def scan_hf_safetensors(model_path: str | Path) -> ModelProfile:
     checkpoint = HfSafetensorsCheckpoint(model_dir)
     scale_map = build_scale_map(set(checkpoint.weight_map.keys()))
     manifest_specs: dict[str, dict] = {}
-    manifest_path = model_dir / "quant_manifest.json"
+    manifest_path = model_dir / "quantization_manifest.json"
     manifest_abi = None
     if manifest_path.exists():
         with manifest_path.open("r", encoding="utf-8") as f:
             manifest = json.load(f)
-        manifest_abi = manifest.get("abi_version")
+        manifest_abi = manifest.get("schema")
         manifest_specs = dict(manifest.get("tensors") or {})
         for weight_name, spec in manifest_specs.items():
             scale_name = spec.get("scale")
             if weight_name in checkpoint.weight_map and scale_name in checkpoint.weight_map:
                 scale_map[weight_name] = scale_name
     scale_targets = set(scale_map.values())
+    shape_targets = {
+        spec["shape"]
+        for spec in manifest_specs.values()
+        if spec.get("shape") in checkpoint.weight_map
+    }
 
     profile = ModelProfile(
         model_path=str(model_dir),
@@ -38,7 +43,7 @@ def scan_hf_safetensors(model_path: str | Path) -> ModelProfile:
         metadata={
             "num_index_keys": len(checkpoint.weight_map),
             "num_shards": len(checkpoint.shard_files()),
-            "quant_manifest_abi": manifest_abi,
+            "quantization_manifest_schema": manifest_abi,
         },
     )
 
@@ -58,7 +63,13 @@ def scan_hf_safetensors(model_path: str | Path) -> ModelProfile:
 
     for tensor_name, info in raw.items():
         scale_name = scale_map.get(tensor_name)
-        role = "scale" if tensor_name in scale_targets else "weight"
+        role = (
+            "scale"
+            if tensor_name in scale_targets
+            else "shape"
+            if tensor_name in shape_targets
+            else "weight"
+        )
         storage_format = None
         manifest_spec = manifest_specs.get(tensor_name)
         if role == "weight" and scale_name:
@@ -70,7 +81,14 @@ def scan_hf_safetensors(model_path: str | Path) -> ModelProfile:
                     info["element_size"],
                     shapes.get(scale_name),
                 )
-        module_kind, tags = classify_weight(tensor_name) if role == "weight" else (None, ())
+        logical_name = (
+            manifest_spec.get("logical_name", tensor_name)
+            if manifest_spec
+            else tensor_name
+        )
+        module_kind, tags = (
+            classify_weight(logical_name) if role == "weight" else (None, ())
+        )
         logical_shape = (
             tuple(manifest_spec["logical_shape"])
             if manifest_spec and manifest_spec.get("logical_shape")

@@ -1,0 +1,183 @@
+from __future__ import annotations
+
+import re
+from collections import defaultdict
+from collections.abc import Iterable
+
+from flag_compressor.inspect.tensor_classifier import classify_weight
+
+
+def module_name_from_weight(name: str) -> str:
+    if not name.endswith(".weight"):
+        raise ValueError(f"Expected a logical weight name ending in '.weight': {name}")
+    return name[: -len(".weight")]
+
+
+_COMPACT_TARGETS = {
+    "moe.routed": (
+        r"re:^.*\.experts\.\d+\."
+        r"(?:gate_proj|up_proj|down_proj|w1|w2|w3)$"
+    ),
+    "moe.shared": (
+        r"re:^.*\.(?:shared_expert|shared_experts)\."
+        r"(?:gate_proj|up_proj|down_proj|w1|w2|w3)$"
+    ),
+    "attention": (
+        r"re:^.*\.(?:self_attn|attention|attn)\..*"
+        r"(?:q_proj|k_proj|v_proj|o_proj|out_proj|query|key|value|dense|"
+        r"c_attn|c_proj|qkv_proj|query_key_value|wq|wk|wv|wo|wq_a|wq_b|"
+        r"wkv_a|wkv_b|kv_a_proj_with_mqa|kv_b_proj|q_a_proj|q_b_proj)$"
+    ),
+    "mlp": (
+        r"re:^.*\.mlp\."
+        r"(?:gate_proj|up_proj|down_proj|fc1|fc2|w1|w2|w3|"
+        r"dense_h_to_4h|dense_4h_to_h)$"
+    ),
+}
+
+
+def _matches_target(module_name: str, target: str) -> bool:
+    if target.startswith("re:"):
+        return re.search(target[3:], module_name) is not None
+    return module_name == target
+
+
+def compile_compressed_tensors_targets(
+    all_logical_weights: Iterable[str],
+    selected_logical_weights: Iterable[str],
+) -> list[str]:
+    """Compile exact tensor selection into compact standard layer targets.
+
+    A category regex is emitted only when it matches exactly the selected
+    modules in the scanned checkpoint. Any irregular remainder is represented
+    by exact module paths, so compactness never changes quantization intent.
+    """
+    all_weights = {name for name in all_logical_weights if name.endswith(".weight")}
+    selected = {
+        name for name in selected_logical_weights if name.endswith(".weight")
+    }
+    unknown = selected - all_weights
+    if unknown:
+        raise ValueError(
+            "Selected weights are absent from the checkpoint: "
+            + ", ".join(sorted(unknown)[:3])
+        )
+
+    all_modules = {module_name_from_weight(name) for name in all_weights}
+    remaining = {module_name_from_weight(name) for name in selected}
+    targets: list[str] = []
+
+    category_modules: dict[str, set[str]] = defaultdict(set)
+    for name in all_weights:
+        _, tags = classify_weight(name)
+        module_name = module_name_from_weight(name)
+        for category in _COMPACT_TARGETS:
+            if category in tags:
+                category_modules[category].add(module_name)
+
+    for category in ("moe.routed", "moe.shared", "attention", "mlp"):
+        members = category_modules[category]
+        if not members or not members.issubset(remaining):
+            continue
+        target = _COMPACT_TARGETS[category]
+        regex_matches = {
+            module for module in all_modules if _matches_target(module, target)
+        }
+        if regex_matches != members:
+            continue
+        targets.append(target)
+        remaining.difference_update(members)
+
+    targets.extend(sorted(remaining))
+    return targets
+
+
+def validate_fusion_closure(
+    all_logical_weights: Iterable[str],
+    selected_logical_weights: Iterable[str],
+) -> None:
+    """Reject tensor selections that split a vLLM fused execution unit."""
+    all_weights = set(all_logical_weights)
+    selected = set(selected_logical_weights)
+    errors: list[str] = []
+
+    paired_suffixes = (
+        (".gate_proj.weight", ".up_proj.weight"),
+        (".q_a_proj.weight", ".kv_a_proj_with_mqa.weight"),
+        (".wk.weight", ".weights_proj.weight"),
+    )
+    visited_pairs: set[frozenset[str]] = set()
+    for name in all_weights:
+        for left_suffix, right_suffix in paired_suffixes:
+            if name.endswith(left_suffix):
+                sibling = name[: -len(left_suffix)] + right_suffix
+            elif name.endswith(right_suffix):
+                sibling = name[: -len(right_suffix)] + left_suffix
+            else:
+                continue
+            pair = frozenset((name, sibling))
+            if sibling not in all_weights or pair in visited_pairs:
+                continue
+            visited_pairs.add(pair)
+            selected_count = sum(item in selected for item in pair)
+            if selected_count == 1:
+                errors.append(
+                    "fused pair has mixed formats: " + ", ".join(sorted(pair))
+                )
+
+    routed_pattern = re.compile(
+        r"^(?P<bank>.*\.experts)\.(?P<expert>\d+)\."
+        r"(?P<proj>gate_proj|up_proj|down_proj|w1|w2|w3)\.weight$"
+    )
+    routed_banks: dict[str, set[str]] = defaultdict(set)
+    for name in all_weights:
+        match = routed_pattern.match(name)
+        if match:
+            routed_banks[match.group("bank")].add(name)
+    for bank, members in routed_banks.items():
+        selected_count = len(members & selected)
+        if selected_count not in (0, len(members)):
+            errors.append(
+                f"routed MoE bank {bank} is partially selected "
+                f"({selected_count}/{len(members)} weights)"
+            )
+
+    if errors:
+        details = "\n  - ".join(errors[:8])
+        raise ValueError(
+            "The selected tensors split fused inference units. Select the whole "
+            f"unit or change the recipe:\n  - {details}"
+        )
+
+
+def build_compressed_tensors_config(
+    all_logical_weights: Iterable[str],
+    selected_logical_weights: Iterable[str],
+    *,
+    group_size: int,
+) -> dict:
+    validate_fusion_closure(all_logical_weights, selected_logical_weights)
+    targets = compile_compressed_tensors_targets(
+        all_logical_weights, selected_logical_weights
+    )
+    if not targets:
+        raise ValueError("Cannot build compressed-tensors config without targets")
+    return {
+        "quant_method": "compressed-tensors",
+        "format": "pack-quantized",
+        "quantization_status": "compressed",
+        "config_groups": {
+            f"w4a16_g{group_size}": {
+                "targets": targets,
+                "weights": {
+                    "num_bits": 4,
+                    "type": "int",
+                    "strategy": "group",
+                    "group_size": group_size,
+                    "symmetric": True,
+                    "dynamic": False,
+                },
+            }
+        },
+        "ignore": [],
+    }

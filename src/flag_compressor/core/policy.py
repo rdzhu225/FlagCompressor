@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
-from typing import Literal
 
 from flag_compressor.core.profile import TensorInfo
 
@@ -18,6 +17,26 @@ BUILTIN_SELECTIONS = {
 
 
 @dataclass(frozen=True)
+class UnselectedWeightsPolicy:
+    """How source-quantized weights outside the selected set are handled."""
+
+    strategy: str = "convert"
+    format: str | None = "bf16"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.strategy, str) or not self.strategy:
+            raise ValueError("unselected.strategy must be non-empty")
+        if self.format is not None and not isinstance(self.format, str):
+            raise ValueError("unselected.format must be a string or null")
+        if self.strategy == "convert" and not self.format:
+            raise ValueError("unselected.format is required for convert strategy")
+        if self.strategy == "preserve" and self.format is not None:
+            raise ValueError(
+                "unselected.format must be omitted for preserve strategy"
+            )
+
+
+@dataclass(frozen=True)
 class QuantizationPolicy:
     selections: tuple[str, ...] = ()
     exclude_selections: tuple[str, ...] = ()
@@ -27,8 +46,9 @@ class QuantizationPolicy:
     group_size: int = 32
     n_candidates: int = 200
     chunk_size: int = 4096
-    other_weights: Literal["bf16", "keep"] = "bf16"
-    scale_suffix: str = ".scale"
+    unselected: UnselectedWeightsPolicy = field(
+        default_factory=UnselectedWeightsPolicy
+    )
 
     def __post_init__(self) -> None:
         unknown = sorted(
@@ -38,8 +58,6 @@ class QuantizationPolicy:
             raise ValueError(f"Unknown selections: {', '.join(unknown)}")
         if self.method != "mse":
             raise ValueError("Only the MSE INT4 quantizer is currently supported")
-        if self.other_weights not in {"bf16", "keep"}:
-            raise ValueError("other_weights must be 'bf16' or 'keep'")
         if self.group_size <= 0 or self.group_size % 2:
             raise ValueError("INT4 group_size must be a positive even integer")
         if self.n_candidates <= 0 or self.chunk_size <= 0:
