@@ -257,6 +257,4 @@ def execute_plan(
     )
     report.extras["report_file"] = report_filename
     report.save(output / report_filename)
-    # Keep the original report filename for callers of the pre-subcommand CLI.
-    report.save(output / "quant_report.json")
     return report
