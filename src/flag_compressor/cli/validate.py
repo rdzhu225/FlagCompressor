@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import logging
+
 from flag_compressor.cli.helpers import dump_json
 from flag_compressor.core.validation import validate_artifact
+
+logger = logging.getLogger(__name__)
 
 
 def run(args) -> None:
@@ -9,11 +13,11 @@ def run(args) -> None:
     if args.json:
         dump_json(result)
     else:
-        print("Valid" if result["valid"] else "Invalid")
-        print(f"Tensors: {result['tensors']}")
-        print(f"Shards: {result['shards']}")
-        print(f"INT4 tensors: {result['int4_tensors']}")
+        logger.info("Valid" if result["valid"] else "Invalid")
+        logger.info("Tensors: %d", result["tensors"])
+        logger.info("Shards: %d", result["shards"])
+        logger.info("INT4 tensors: %d", result["int4_tensors"])
         for error in result["errors"]:
-            print(f"  ERROR: {error}")
+            logger.error("  %s", error)
     if not result["valid"]:
         raise SystemExit(1)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from flag_compressor.cli.logging_setup import configure_logging
 from flag_compressor.core.policy import BUILTIN_SELECTIONS
 
 
@@ -60,6 +61,7 @@ def main(argv: list[str] | None = None) -> None:
         raw.insert(0, "convert")
     parser = build_parser()
     args = parser.parse_args(raw)
+    configure_logging()
 
     if args.command == "convert":
         from flag_compressor.cli import convert

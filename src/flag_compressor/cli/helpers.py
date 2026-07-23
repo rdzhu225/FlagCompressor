@@ -1,22 +1,25 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 from flag_compressor.core.plan import ExecutionPlan
 from flag_compressor.core.policy import QuantizationPolicy
 
+logger = logging.getLogger(__name__)
+
 
 def print_plan(plan: ExecutionPlan) -> None:
-    print("Execution plan")
-    print("  input formats")
+    logger.info("Execution plan")
+    logger.info("  input formats")
     for input_format, count in sorted(plan.input_format_counts.items()):
-        print(f"    {input_format}: {count}")
-    print("  output formats")
+        logger.info("    %s: %d", input_format, count)
+    logger.info("  output formats")
     for output_format, count in sorted(plan.output_format_counts.items()):
-        print(f"    {output_format}: {count}")
-    print(f"  keep: {len(plan.kept_tensors)}")
-    print(f"  unmatched quantized: {len(plan.unmatched_quantized_tensors)}")
+        logger.info("    %s: %d", output_format, count)
+    logger.info("  keep: %d", len(plan.kept_tensors))
+    logger.info("  unmatched quantized: %d", len(plan.unmatched_quantized_tensors))
 
 
 def ensure_no_unmatched(plan: ExecutionPlan) -> None:
