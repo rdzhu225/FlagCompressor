@@ -23,7 +23,11 @@ def run(args) -> None:
         "compressed_tensors_int4_groupwise",
         0,
     )
-    if int4_count == 0:
+    fused_moe_count = plan.output_format_counts.get(
+        "compressed_tensors_int4_moe_fused",
+        0,
+    )
+    if int4_count == 0 and fused_moe_count == 0:
         raise RuntimeError("The INT4 selectors did not match any supported tensors")
     if args.dry_run:
         print_plan(plan)
@@ -35,6 +39,7 @@ def run(args) -> None:
     report = execute_plan(args.input, args.output, plan, backend)
     print("Done.")
     print(f"INT4 tensors: {int4_count}")
+    print(f"INT4 fused MoE banks: {fused_moe_count}")
     print(f"Converted tensors: {report.converted}")
     print(f"Kept tensors: {report.kept}")
     print(f"Manifest: {args.output}/quantization_manifest.json")

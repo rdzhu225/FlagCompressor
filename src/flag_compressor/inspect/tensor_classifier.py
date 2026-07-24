@@ -13,11 +13,42 @@ MLP_LINEAR_NAMES = {
     "dense_h_to_4h", "dense_4h_to_h",
 }
 
+# Fused routed-expert banks store every expert of one projection as a single
+# 3D tensor (``[num_experts, out, in]``) whose leaf is the projection name and
+# whose parent module is ``experts``. These tensors have no ``.weight`` suffix,
+# so they are classified separately from the 2D linear weights above.
+FUSED_EXPERT_LEAF_NAMES = {
+    "gate_up_proj", "gate_proj", "up_proj", "down_proj", "w1", "w2", "w3",
+}
+
+
+def classify_fused_expert(name: str) -> tuple[str | None, tuple[str, ...]]:
+    """Classify a fused routed-expert bank tensor (``experts.<proj>``).
+
+    Returns ``("moe_routed_fused", tags)`` when ``name`` is a fused routed
+    expert projection (parent module ``experts``, leaf a known projection),
+    otherwise ``(None, ())``. These tensors carry no ``.weight`` suffix and are
+    stored as 3D ``[num_experts, out, in]`` banks.
+    """
+    if name.endswith(".weight"):
+        return None, ()
+    parts = name.lower().split(".")
+    if len(parts) < 2:
+        return None, ()
+    leaf = parts[-1]
+    parent = parts[-2]
+    shared_parts = {"shared_expert", "shared_experts"}
+    if any(part in shared_parts for part in parts):
+        return None, ()
+    if parent == "experts" and leaf in FUSED_EXPERT_LEAF_NAMES:
+        return "moe_routed_fused", ("linear", "moe", "moe.routed")
+    return None, ()
+
 
 def classify_weight(name: str) -> tuple[str | None, tuple[str, ...]]:
     """Classify common linear weights without making conversion decisions."""
     if not name.endswith(".weight"):
-        return None, ()
+        return classify_fused_expert(name)
     parts = name[: -len(".weight")].lower().split(".")
     leaf = parts[-1]
     tags: set[str] = set()

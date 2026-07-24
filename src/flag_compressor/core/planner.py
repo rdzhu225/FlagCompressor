@@ -31,6 +31,24 @@ def _is_float_weight(tensor: TensorInfo) -> bool:
     )
 
 
+def _fused_expert_proj_kind(tensor: TensorInfo) -> str | None:
+    """Return the projection leaf of a fused routed-expert bank, else None."""
+    if tensor.module_kind != "moe_routed_fused":
+        return None
+    return tensor.name.split(".")[-1]
+
+
+def _is_fused_moe_expert(tensor: TensorInfo) -> bool:
+    """A 3D fused routed-expert bank (``[num_experts, out, in]``) in float."""
+    return (
+        tensor.role == "weight"
+        and tensor.scale_name is None
+        and tensor.dtype in {"bfloat16", "float16", "float32"}
+        and len(tensor.shape) == 3
+        and _fused_expert_proj_kind(tensor) is not None
+    )
+
+
 def _input_format_for(tensor: TensorInfo) -> FormatSpec | None:
     if _is_scaled_fp4(tensor):
         return FormatSpec("fp4_e2m1_e8m0")
@@ -97,6 +115,52 @@ def _plan_unselected_weight(
             plan.unmatched_quantized_tensors.append(tensor)
 
 
+def _plan_fused_moe_expert(
+    plan: ExecutionPlan,
+    tensor: TensorInfo,
+    policy: QuantizationPolicy,
+    proj_kind: str,
+) -> None:
+    """Plan INT4 quantization of a fused 3D routed-expert bank.
+
+    The bank is stored as ``[num_experts, out, in]``. Each expert is quantized
+    as an independent 2D ``[out, in]`` weight, so ``in`` must be divisible by
+    the group size. ``gate_up_proj`` fuses gate and up along ``out``; that axis
+    must be even so it can be split into two equal projections.
+    """
+    shape = tensor.effective_logical_shape
+    if len(shape) != 3:
+        raise ValueError(
+            f"Selected fused expert {tensor.name!r} has shape {shape}; expected 3D"
+        )
+    _, out_features, in_features = shape
+    if in_features % policy.group_size:
+        raise ValueError(
+            f"Selected fused expert {tensor.name!r} has in_features={in_features}; "
+            f"must be divisible by group_size={policy.group_size}"
+        )
+    if proj_kind == "gate_up_proj" and out_features % 2:
+        raise ValueError(
+            f"Selected fused expert {tensor.name!r} has odd fused out_features="
+            f"{out_features}; cannot split into gate and up projections"
+        )
+    plan.add_action(
+        tensor,
+        input_format=FormatSpec("bf16"),
+        output_format=FormatSpec(
+            "compressed_tensors_int4_moe_fused",
+            {
+                "quantizer": policy.method,
+                "group_size": policy.group_size,
+                "n_candidates": policy.n_candidates,
+                "chunk_size": policy.chunk_size,
+                "proj_kind": proj_kind,
+            },
+        ),
+        rule_name="user_selected_int4_moe",
+    )
+
+
 def build_convert_plan(profile: ModelProfile) -> ExecutionPlan:
     """Build a dequantization plan.
 
@@ -155,6 +219,10 @@ def build_quantize_plan(
             continue
 
         if policy.selects(tensor):
+            proj_kind = _fused_expert_proj_kind(tensor)
+            if _is_fused_moe_expert(tensor):
+                _plan_fused_moe_expert(plan, tensor, policy, proj_kind)
+                continue
             input_format = _input_format_for(tensor)
             if input_format is None:
                 raise ValueError(

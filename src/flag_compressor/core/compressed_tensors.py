@@ -4,6 +4,32 @@ import re
 from collections import defaultdict
 from collections.abc import Iterable
 
+
+# Container path segments that a model's WeightsMapper commonly rewrites as a
+# prefix (``model.``, ``model.language_model.`` -> ``language_model.model.``,
+# ``model.visual.`` -> ``visual.``, ...). We strip these leading segments so the
+# ignore regex anchors on the stable trailing module path.
+_CONTAINER_PREFIX_SEGMENTS = {"model", "language_model", "visual", "vision_model"}
+
+
+def _prefix_agnostic_ignore(module_name: str) -> str:
+    """Turn a checkpoint module name into a prefix-agnostic ``ignore`` regex.
+
+    vLLM matches ``ignore`` against the runtime module path, which a model's
+    ``WeightsMapper`` may rewrite relative to the checkpoint name (for example
+    ``model.visual.`` -> ``visual.`` or ``model.language_model.`` ->
+    ``language_model.model.``). These rewrites only touch leading *container*
+    segments, so we drop them and anchor the regex on the stable trailing path
+    with a leading ``.*``. The remaining suffix (layer index + module + leaf,
+    or the vision block/leaf) uniquely identifies the Linear module.
+    """
+    parts = module_name.split(".")
+    start = 0
+    while start < len(parts) - 1 and parts[start] in _CONTAINER_PREFIX_SEGMENTS:
+        start += 1
+    suffix = ".".join(parts[start:])
+    return "re:.*" + re.escape(suffix) + "$"
+
 from flag_compressor.inspect.tensor_classifier import classify_weight
 
 
@@ -155,6 +181,7 @@ def build_compressed_tensors_config(
     selected_logical_weights: Iterable[str],
     *,
     group_size: int,
+    ignore_modules: Iterable[str] = (),
 ) -> dict:
     validate_fusion_closure(all_logical_weights, selected_logical_weights)
     targets = compile_compressed_tensors_targets(
@@ -162,6 +189,14 @@ def build_compressed_tensors_config(
     )
     if not targets:
         raise ValueError("Cannot build compressed-tensors config without targets")
+    # The vLLM compressed-tensors loader calls ``get_scheme`` for every Linear
+    # (and MoE) module. Any Linear that is NOT quantized must be listed in
+    # ``ignore`` or the loader raises "Unable to find matching target". We list
+    # the unquantized Linear modules explicitly so unrelated 1D weights
+    # (norms, embeddings) are never touched.
+    ignore = sorted(
+        _prefix_agnostic_ignore(module) for module in set(ignore_modules)
+    )
     return {
         "quant_method": "compressed-tensors",
         "format": "pack-quantized",
@@ -179,5 +214,5 @@ def build_compressed_tensors_config(
                 },
             }
         },
-        "ignore": [],
+        "ignore": ignore,
     }

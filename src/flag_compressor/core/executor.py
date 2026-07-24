@@ -11,7 +11,33 @@ from flag_compressor.core.plan import ExecutionPlan, TensorAction
 from flag_compressor.core.report import ConversionReport
 from flag_compressor.formats.base import get_weight_format
 from flag_compressor.formats.compressed_tensors import compressed_tensor_names
+from flag_compressor.formats.compressed_tensors_moe import (
+    fused_expert_bank_prefix,
+)
 from flag_compressor.io.hf_checkpoint import HfSafetensorsCheckpoint
+
+_FUSED_MOE_INT4 = "compressed_tensors_int4_moe_fused"
+
+
+def _fused_expert_logical_weights(action) -> list[str]:
+    """Expand a fused-expert bank action into per-expert logical weight names.
+
+    Mirrors the tensor names emitted by the fused MoE format: every expert of
+    the ``[num_experts, out, in]`` bank yields one (gate/up split) or a single
+    2D projection under ``<experts>.<e>.<proj>.weight``.
+    """
+    tensor = action.tensor
+    prefix = fused_expert_bank_prefix(tensor.name)
+    num_experts = int(tensor.effective_logical_shape[0])
+    proj_kind = action.output_format.params.get("proj_kind") or tensor.name.split(".")[-1]
+    proj_names = (
+        ("gate_proj", "up_proj") if proj_kind == "gate_up_proj" else (proj_kind,)
+    )
+    return [
+        f"{prefix}.{expert_id}.{proj_name}.weight"
+        for expert_id in range(num_experts)
+        for proj_name in proj_names
+    ]
 
 
 def _build_action_map(plan: ExecutionPlan) -> dict[str, TensorAction]:
@@ -57,13 +83,50 @@ def _patch_bf16_config(output_path: Path) -> None:
 
 
 def _logical_weight_names(plan: ExecutionPlan) -> set[str]:
-    return {
+    names = {
         tensor.name
         for tensor in (
             [action.tensor for action in plan.actions] + plan.kept_tensors
         )
         if tensor.role == "weight" and tensor.name.endswith(".weight")
     }
+    for action in plan.actions:
+        if action.output_format.name == _FUSED_MOE_INT4:
+            names.update(_fused_expert_logical_weights(action))
+    return names
+
+
+_QUANTIZED_OUTPUT_FORMATS = {
+    "compressed_tensors_int4_groupwise",
+    _FUSED_MOE_INT4,
+}
+
+
+def _ignore_modules(plan: ExecutionPlan) -> set[str]:
+    """Module names of unquantized Linear weights, for the CT ``ignore`` list.
+
+    The vLLM compressed-tensors loader resolves a scheme for every Linear
+    (and MoE) module and errors on any it cannot match. Every 2D float
+    ``.weight`` that is not quantized is therefore listed in ``ignore`` so it
+    loads as plain bf16. 1D weights (norms) and non-2D tensors are never
+    treated as Linear by the loader and are left out.
+    """
+    quantized = {
+        action.tensor.name
+        for action in plan.actions
+        if action.output_format.name in _QUANTIZED_OUTPUT_FORMATS
+    }
+    candidates = [action.tensor for action in plan.actions] + plan.kept_tensors
+    ignore: set[str] = set()
+    for tensor in candidates:
+        if tensor.role != "weight" or not tensor.name.endswith(".weight"):
+            continue
+        if tensor.name in quantized:
+            continue
+        if len(tensor.effective_logical_shape) != 2:
+            continue
+        ignore.add(tensor.name[: -len(".weight")])
+    return ignore
 
 
 def _patch_compressed_tensors_config(
@@ -83,10 +146,14 @@ def _patch_compressed_tensors_config(
         for action in plan.actions
         if action.output_format.name == "compressed_tensors_int4_groupwise"
     }
+    for action in plan.actions:
+        if action.output_format.name == _FUSED_MOE_INT4:
+            selected.update(_fused_expert_logical_weights(action))
     group_sizes = {
         int(action.output_format.params.get("group_size", 32))
         for action in plan.actions
-        if action.output_format.name == "compressed_tensors_int4_groupwise"
+        if action.output_format.name
+        in ("compressed_tensors_int4_groupwise", _FUSED_MOE_INT4)
     }
     if len(group_sizes) != 1:
         raise ValueError(
@@ -97,6 +164,7 @@ def _patch_compressed_tensors_config(
         _logical_weight_names(plan),
         selected,
         group_size=next(iter(group_sizes)),
+        ignore_modules=_ignore_modules(plan),
     )
 
     config["torch_dtype"] = "bfloat16"
@@ -134,6 +202,30 @@ def _write_quantization_manifest(
                 ],
                 "shape": names.shape,
                 "group_size": group_size,
+                "rule": action.rule_name,
+            }
+        elif action.output_format.name == _FUSED_MOE_INT4:
+            group_size = int(action.output_format.params.get("group_size", 32))
+            num_experts, fused_out, in_features = (
+                int(d) for d in tensor.effective_logical_shape
+            )
+            proj_kind = action.output_format.params.get("proj_kind") or (
+                tensor.name.split(".")[-1]
+            )
+            out_features = (
+                fused_out // 2 if proj_kind == "gate_up_proj" else fused_out
+            )
+            tensors[tensor.name] = {
+                "logical_name": tensor.name,
+                "format": "compressed-tensors-pack-quantized-int4-moe-fused",
+                "input_format": action.input_format.name,
+                "storage_dtype": "int32",
+                "num_experts": num_experts,
+                "proj_kind": proj_kind,
+                "per_expert_logical_shape": [out_features, in_features],
+                "per_expert_scale_shape": [out_features, in_features // group_size],
+                "group_size": group_size,
+                "expanded_weights": len(_fused_expert_logical_weights(action)),
                 "rule": action.rule_name,
             }
         elif action.output_format.name in _BF16_FORMATS:
