@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from collections import defaultdict
+
 from flag_compressor.core.compressed_tensors import validate_fusion_closure
+from flag_compressor.core.moe_layout import MoeLayout
 from flag_compressor.core.plan import ExecutionPlan, FormatSpec
 from flag_compressor.core.policy import QuantizationPolicy, UnselectedWeightsPolicy
 from flag_compressor.core.profile import ModelProfile, TensorInfo
@@ -115,34 +118,47 @@ def _plan_unselected_weight(
             plan.unmatched_quantized_tensors.append(tensor)
 
 
+def _fused_bank_module(tensor: TensorInfo) -> str:
+    """The ``...experts`` module prefix shared by one routed bank's projections."""
+    return tensor.name.rsplit(".", 1)[0]
+
+
 def _plan_fused_moe_expert(
     plan: ExecutionPlan,
     tensor: TensorInfo,
     policy: QuantizationPolicy,
     proj_kind: str,
+    layout: MoeLayout,
 ) -> None:
     """Plan INT4 quantization of a fused 3D routed-expert bank.
 
-    The bank is stored as ``[num_experts, out, in]``. Each expert is quantized
-    as an independent 2D ``[out, in]`` weight, so ``in`` must be divisible by
-    the group size. ``gate_up_proj`` fuses gate and up along ``out``; that axis
-    must be even so it can be split into two equal projections.
+    Each expert is quantized as an independent 2D ``[out, in]`` weight. The
+    per-expert ``(out, in)`` is derived from the model's :class:`MoeLayout`
+    (axis order is model specific). ``in`` must be divisible by the group size,
+    and — because the packed storage uses int32 words of eight nibbles — by 8.
+    A fused ``gate_up_proj`` must have an even split dimension.
     """
     shape = tensor.effective_logical_shape
     if len(shape) != 3:
         raise ValueError(
             f"Selected fused expert {tensor.name!r} has shape {shape}; expected 3D"
         )
-    _, out_features, in_features = shape
+    num_experts = int(shape[0])
+    out_features, in_features = layout.per_expert_out_in(proj_kind, shape)
+    if proj_kind == "gate_up_proj" and int(shape[1] if layout.out_in_order else shape[2]) % 2:
+        raise ValueError(
+            f"Selected fused expert {tensor.name!r} has an odd fused output "
+            "dimension; cannot split into gate and up projections"
+        )
     if in_features % policy.group_size:
         raise ValueError(
             f"Selected fused expert {tensor.name!r} has in_features={in_features}; "
             f"must be divisible by group_size={policy.group_size}"
         )
-    if proj_kind == "gate_up_proj" and out_features % 2:
+    if in_features % 8:
         raise ValueError(
-            f"Selected fused expert {tensor.name!r} has odd fused out_features="
-            f"{out_features}; cannot split into gate and up projections"
+            f"Selected fused expert {tensor.name!r} has in_features={in_features}; "
+            "INT4 pack-quantized storage requires in_features divisible by 8"
         )
     plan.add_action(
         tensor,
@@ -155,10 +171,54 @@ def _plan_fused_moe_expert(
                 "n_candidates": policy.n_candidates,
                 "chunk_size": policy.chunk_size,
                 "proj_kind": proj_kind,
+                "layout": layout.name,
+                "num_experts": num_experts,
+                "out_features": out_features,
+                "in_features": in_features,
             },
         ),
         rule_name="user_selected_int4_moe",
     )
+
+
+def _validate_fused_bank_closure(
+    profile: ModelProfile,
+    selected_banks: list[TensorInfo],
+) -> None:
+    """Reject partial selection that would split a routed expert bank.
+
+    vLLM treats the whole FusedMoE (gate/up/down of every expert) as one
+    quantized unit. If any projection bank of an ``experts`` module is selected,
+    all of that module's banks must be selected too — otherwise the exported
+    config marks the unit INT4 while some projections are still bf16, which
+    fails at load time.
+    """
+    selected_by_module: dict[str, set[str]] = defaultdict(set)
+    for tensor in selected_banks:
+        selected_by_module[_fused_bank_module(tensor)].add(
+            tensor.name.split(".")[-1]
+        )
+    all_by_module: dict[str, set[str]] = defaultdict(set)
+    for tensor in profile.tensors.values():
+        if tensor.module_kind == "moe_routed_fused":
+            all_by_module[_fused_bank_module(tensor)].add(
+                tensor.name.split(".")[-1]
+            )
+    errors: list[str] = []
+    for module, chosen in selected_by_module.items():
+        present = all_by_module.get(module, set())
+        missing = present - chosen
+        if missing:
+            errors.append(
+                f"routed expert bank {module!r} is partially selected: "
+                f"chose {sorted(chosen)} but {sorted(missing)} are not selected"
+            )
+    if errors:
+        details = "\n  - ".join(errors[:8])
+        raise ValueError(
+            "The selection splits fused routed-expert banks; select the whole "
+            f"expert module (gate/up/down) or none:\n  - {details}"
+        )
 
 
 def build_convert_plan(profile: ModelProfile) -> ExecutionPlan:
@@ -193,6 +253,7 @@ def build_convert_plan(profile: ModelProfile) -> ExecutionPlan:
 def build_quantize_plan(
     profile: ModelProfile,
     policy: QuantizationPolicy,
+    moe_layout: MoeLayout | None = None,
 ) -> ExecutionPlan:
     plan = ExecutionPlan(
         metadata={
@@ -214,6 +275,7 @@ def build_quantize_plan(
             },
         }
     )
+    selected_banks: list[TensorInfo] = []
     for tensor in profile.tensors.values():
         if tensor.role != "weight":
             continue
@@ -221,7 +283,14 @@ def build_quantize_plan(
         if policy.selects(tensor):
             proj_kind = _fused_expert_proj_kind(tensor)
             if _is_fused_moe_expert(tensor):
-                _plan_fused_moe_expert(plan, tensor, policy, proj_kind)
+                if moe_layout is None:
+                    raise ValueError(
+                        f"Selected fused routed-expert bank {tensor.name!r} "
+                        "requires a MoeLayout. Pass moe_layout=select_moe_layout"
+                        "(config) so the expert axis order is known."
+                    )
+                selected_banks.append(tensor)
+                _plan_fused_moe_expert(plan, tensor, policy, proj_kind, moe_layout)
                 continue
             input_format = _input_format_for(tensor)
             if input_format is None:
@@ -264,6 +333,7 @@ def build_quantize_plan(
             == "compressed_tensors_int4_groupwise"
         ),
     )
+    _validate_fused_bank_closure(profile, selected_banks)
     return plan
 
 

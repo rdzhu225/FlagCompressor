@@ -7,6 +7,7 @@ from tqdm import tqdm
 
 from flag_compressor.backends.base import BackendRunContext, QuantBackend
 from flag_compressor.core.compressed_tensors import build_compressed_tensors_config
+from flag_compressor.core.moe_layout import ExpertProjection, layout_by_name
 from flag_compressor.core.plan import ExecutionPlan, TensorAction
 from flag_compressor.core.report import ConversionReport
 from flag_compressor.formats.base import get_weight_format
@@ -19,24 +20,31 @@ from flag_compressor.io.hf_checkpoint import HfSafetensorsCheckpoint
 _FUSED_MOE_INT4 = "compressed_tensors_int4_moe_fused"
 
 
-def _fused_expert_logical_weights(action) -> list[str]:
-    """Expand a fused-expert bank action into per-expert logical weight names.
+def _fused_expert_projections(action) -> list[tuple[str, ExpertProjection]]:
+    """Expand a fused-expert bank action into per-expert projection specs.
 
-    Mirrors the tensor names emitted by the fused MoE format: every expert of
-    the ``[num_experts, out, in]`` bank yields one (gate/up split) or a single
-    2D projection under ``<experts>.<e>.<proj>.weight``.
+    Returns ``(module_prefix, ExpertProjection)`` for every logical per-expert
+    weight the fused format emits, using the same :class:`MoeLayout` that drove
+    quantization so the names/shapes match the tensors written to disk.
     """
     tensor = action.tensor
     prefix = fused_expert_bank_prefix(tensor.name)
-    num_experts = int(tensor.effective_logical_shape[0])
-    proj_kind = action.output_format.params.get("proj_kind") or tensor.name.split(".")[-1]
-    proj_names = (
-        ("gate_proj", "up_proj") if proj_kind == "gate_up_proj" else (proj_kind,)
+    params = action.output_format.params
+    proj_kind = params.get("proj_kind") or tensor.name.split(".")[-1]
+    layout = layout_by_name(params["layout"])
+    projections = layout.expand_bank(
+        proj_kind,
+        int(params["num_experts"]),
+        tuple(tensor.effective_logical_shape),
     )
+    return [(prefix, proj) for proj in projections]
+
+
+def _fused_expert_logical_weights(action) -> list[str]:
+    """Per-expert logical ``.weight`` names for CT config target/ignore sets."""
     return [
-        f"{prefix}.{expert_id}.{proj_name}.weight"
-        for expert_id in range(num_experts)
-        for proj_name in proj_names
+        f"{prefix}.{proj.expert_id}.{proj.proj_name}.weight"
+        for prefix, proj in _fused_expert_projections(action)
     ]
 
 
@@ -206,28 +214,29 @@ def _write_quantization_manifest(
             }
         elif action.output_format.name == _FUSED_MOE_INT4:
             group_size = int(action.output_format.params.get("group_size", 32))
-            num_experts, fused_out, in_features = (
-                int(d) for d in tensor.effective_logical_shape
-            )
-            proj_kind = action.output_format.params.get("proj_kind") or (
-                tensor.name.split(".")[-1]
-            )
-            out_features = (
-                fused_out // 2 if proj_kind == "gate_up_proj" else fused_out
-            )
-            tensors[tensor.name] = {
-                "logical_name": tensor.name,
-                "format": "compressed-tensors-pack-quantized-int4-moe-fused",
-                "input_format": action.input_format.name,
-                "storage_dtype": "int32",
-                "num_experts": num_experts,
-                "proj_kind": proj_kind,
-                "per_expert_logical_shape": [out_features, in_features],
-                "per_expert_scale_shape": [out_features, in_features // group_size],
-                "group_size": group_size,
-                "expanded_weights": len(_fused_expert_logical_weights(action)),
-                "rule": action.rule_name,
-            }
+            # Emit one spec PER expert projection that actually lands on disk,
+            # using the same schema as regular INT4 weights so the scanner and
+            # convert path recognize the artifact by its real tensor names.
+            for prefix, proj in _fused_expert_projections(action):
+                logical_name = f"{prefix}.{proj.expert_id}.{proj.proj_name}.weight"
+                names = compressed_tensor_names(logical_name)
+                tensors[names.weight] = {
+                    "logical_name": logical_name,
+                    "format": "compressed-tensors-pack-quantized-int4",
+                    "input_format": action.input_format.name,
+                    "storage_dtype": "int32",
+                    "storage_shape": [proj.out_features, proj.in_features // 8],
+                    "logical_shape": [proj.out_features, proj.in_features],
+                    "scale": names.scale,
+                    "scale_shape": [
+                        proj.out_features,
+                        proj.in_features // group_size,
+                    ],
+                    "shape": names.shape,
+                    "group_size": group_size,
+                    "rule": action.rule_name,
+                    "source_fused_bank": tensor.name,
+                }
         elif action.output_format.name in _BF16_FORMATS:
             tensors[tensor.name] = {
                 "logical_name": tensor.name,

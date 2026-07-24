@@ -4,6 +4,8 @@ import re
 from collections import defaultdict
 from collections.abc import Iterable
 
+from flag_compressor.inspect.tensor_classifier import classify_weight
+
 
 # Container path segments that a model's WeightsMapper commonly rewrites as a
 # prefix (``model.``, ``model.language_model.`` -> ``language_model.model.``,
@@ -29,8 +31,6 @@ def _prefix_agnostic_ignore(module_name: str) -> str:
         start += 1
     suffix = ".".join(parts[start:])
     return "re:.*" + re.escape(suffix) + "$"
-
-from flag_compressor.inspect.tensor_classifier import classify_weight
 
 
 def module_name_from_weight(name: str) -> str:

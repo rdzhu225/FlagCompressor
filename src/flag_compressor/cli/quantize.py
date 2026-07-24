@@ -1,14 +1,40 @@
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 
 from flag_compressor.backends.registry import build_backend
 from flag_compressor.cli.helpers import build_quantization_policy, ensure_no_unmatched, print_plan
 from flag_compressor.core.executor import execute_plan
+from flag_compressor.core.moe_layout import select_moe_layout
 from flag_compressor.core.planner import build_quantize_plan
 from flag_compressor.inspect.checkpoint_scanner import scan_hf_safetensors
 
 logger = logging.getLogger(__name__)
+
+
+def _selected_fused_expert(profile, policy) -> bool:
+    """Whether the policy selects any fused 3D routed-expert bank."""
+    return any(
+        tensor.module_kind == "moe_routed_fused" and policy.selects(tensor)
+        for tensor in profile.tensors.values()
+    )
+
+
+def _load_moe_layout(model_path: str, profile, policy):
+    """Select a fused-expert layout only when fused experts are quantized."""
+    if not _selected_fused_expert(profile, policy):
+        return None
+    config_path = Path(model_path) / "config.json"
+    if not config_path.exists():
+        raise FileNotFoundError(
+            "Quantizing fused routed experts requires config.json to select a "
+            f"layout adapter, but {config_path} is missing"
+        )
+    with config_path.open("r", encoding="utf-8") as f:
+        config = json.load(f)
+    return select_moe_layout(config)
 
 
 def run(args) -> None:
@@ -17,7 +43,8 @@ def run(args) -> None:
 
     policy = build_quantization_policy(args)
     profile = scan_hf_safetensors(args.input)
-    plan = build_quantize_plan(profile, policy)
+    moe_layout = _load_moe_layout(args.input, profile, policy)
+    plan = build_quantize_plan(profile, policy, moe_layout)
     ensure_no_unmatched(plan)
     int4_count = plan.output_format_counts.get(
         "compressed_tensors_int4_groupwise",

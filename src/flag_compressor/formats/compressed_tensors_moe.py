@@ -5,6 +5,7 @@ from typing import Any
 import torch
 
 from flag_compressor.backends.base import BackendRunContext, QuantBackend
+from flag_compressor.core.moe_layout import layout_by_name
 from flag_compressor.formats.base import (
     ArtifactResult,
     WeightFormat,
@@ -29,11 +30,12 @@ def fused_expert_bank_prefix(tensor_name: str) -> str:
 def _per_expert_projections(
     proj_kind: str, expert: torch.Tensor
 ) -> list[tuple[str, torch.Tensor]]:
-    """Split one expert's fused projection into standard 2D linear weights.
+    """Split one expert's projection into standard 2D linear weights.
 
-    ``expert`` is 2D ``[out, in]``. ``gate_up_proj`` fuses gate and up along the
-    output axis and is split into ``gate_proj`` and ``up_proj``; every other
-    projection maps to a single standard linear weight of the same leaf name.
+    ``expert`` is already oriented as 2D ``[out, in]`` (the caller applies any
+    layout transpose first). ``gate_up_proj`` fuses gate and up along the output
+    axis and is split into ``gate_proj`` and ``up_proj``; every other projection
+    maps to a single standard linear weight of the same leaf name.
     """
     if proj_kind == "gate_up_proj":
         gate, up = expert.chunk(2, dim=0)
@@ -72,6 +74,7 @@ class CompressedTensorsInt4MoEFusedFormat(WeightFormat):
         group_size = int(params.get("group_size", 32))
         n_candidates = int(params.get("n_candidates", 200))
         chunk_size = int(params.get("chunk_size", 4096))
+        layout = layout_by_name(params["layout"])
 
         prefix = fused_expert_bank_prefix(tensor_name)
         num_experts = int(weight.shape[0])
@@ -80,6 +83,9 @@ class CompressedTensorsInt4MoEFusedFormat(WeightFormat):
 
         for expert_id in range(num_experts):
             expert = weight[expert_id]
+            # Orient the storage slice to logical [out, in] before splitting.
+            if not layout.out_in_order:
+                expert = expert.transpose(0, 1)
             for proj_name, proj_weight in _per_expert_projections(proj_kind, expert):
                 proj_weight = proj_weight.contiguous()
                 out_features, in_features = (int(d) for d in proj_weight.shape)

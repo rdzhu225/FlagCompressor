@@ -8,66 +8,6 @@ import torch
 from flag_compressor.io.hf_checkpoint import HfSafetensorsCheckpoint
 
 
-def _validate_fused_moe_entry(
-    logical_name: str,
-    spec: dict,
-    tensor_meta: dict,
-    logical_shape_values: dict,
-    errors: list,
-) -> int:
-    """Validate the per-expert tensors expanded from a fused-bank manifest entry.
-
-    Returns the number of quantized per-expert projections checked. The bank
-    name itself is logical and is not expected on disk; each expert projection
-    is stored as ``<experts>.<e>.<proj>.weight_packed`` (+ scale, shape).
-    """
-    prefix = logical_name.rsplit(".", 1)[0]
-    num_experts = int(spec.get("num_experts", 0))
-    proj_kind = spec.get("proj_kind")
-    out_features, in_features = spec.get("per_expert_logical_shape", [0, 0])
-    group_size = int(spec.get("group_size", 32)) or 1
-    proj_names = (
-        ("gate_proj", "up_proj") if proj_kind == "gate_up_proj" else (proj_kind,)
-    )
-    expected_packed_shape = [out_features, in_features // 8]
-    expected_scale_shape = [out_features, in_features // group_size]
-    checked = 0
-    for expert_id in range(num_experts):
-        for proj_name in proj_names:
-            base = f"{prefix}.{expert_id}.{proj_name}"
-            weight_name = f"{base}.weight_packed"
-            scale_name = f"{base}.weight_scale"
-            shape_name = f"{base}.weight_shape"
-            if weight_name not in tensor_meta:
-                errors.append(f"Fused MoE weight is missing: {weight_name}")
-                continue
-            checked += 1
-            weight_shape, weight_dtype = tensor_meta[weight_name]
-            if weight_dtype != torch.int32:
-                errors.append(
-                    f"Fused MoE weight {weight_name} is {weight_dtype}, expected int32"
-                )
-            if list(weight_shape) != expected_packed_shape:
-                errors.append(f"Fused MoE packed shape mismatch for {weight_name}")
-            if scale_name not in tensor_meta:
-                errors.append(f"Fused MoE scale is missing: {scale_name}")
-            else:
-                scale_shape, scale_dtype = tensor_meta[scale_name]
-                if scale_dtype != torch.bfloat16:
-                    errors.append(
-                        f"Fused MoE scale {scale_name} is {scale_dtype}, expected bfloat16"
-                    )
-                if list(scale_shape) != expected_scale_shape:
-                    errors.append(f"Fused MoE scale shape mismatch for {scale_name}")
-            if shape_name not in tensor_meta:
-                errors.append(f"Fused MoE logical shape tensor is missing: {shape_name}")
-            elif logical_shape_values.get(shape_name) != [out_features, in_features]:
-                errors.append(
-                    f"Fused MoE logical shape tensor {shape_name} has the wrong value"
-                )
-    return checked
-
-
 def validate_artifact(model_path: str | Path) -> dict:
     path = Path(model_path)
     checkpoint = HfSafetensorsCheckpoint(path)
@@ -117,13 +57,6 @@ def validate_artifact(model_path: str | Path) -> dict:
             errors.append("Unsupported quantization manifest schema")
         for name, spec in manifest.get("tensors", {}).items():
             tensor_format = spec.get("format")
-            if tensor_format == "compressed-tensors-pack-quantized-int4-moe-fused":
-                # ``name`` is the logical fused-bank name, which no longer
-                # exists on disk: it was expanded into per-expert projections.
-                int4_tensors += _validate_fused_moe_entry(
-                    name, spec, tensor_meta, logical_shape_values, errors
-                )
-                continue
             if name not in tensor_meta:
                 errors.append(f"Manifest weight is missing: {name}")
                 continue
