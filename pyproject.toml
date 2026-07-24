@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "flag-compressor"
+name = "flagos-compressor"
 version = "0.1.0"
-description = "FlagCompressor: model-agnostic checkpoint conversion and INT4 quantization."
+description = "FlagOS-Compressor: model-agnostic checkpoint conversion and INT4 quantization."
 requires-python = ">=3.10"
 dependencies = [
   "torch",
@@ -16,7 +16,7 @@ dependencies = [
 
 
 [project.scripts]
-flag-compressor = "flag_compressor.cli.main:main"
+flagos-compressor = "flagos_compressor.cli.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

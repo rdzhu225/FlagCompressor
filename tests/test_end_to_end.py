@@ -4,15 +4,15 @@ from pathlib import Path
 import torch
 from safetensors.torch import load_file, save_file
 
-import flag_compressor.formats.register  # noqa: F401
-import flag_compressor.quantizers.register  # noqa: F401
-from flag_compressor.backends.registry import build_backend
-from flag_compressor.cli.main import main
-from flag_compressor.core.executor import execute_plan
-from flag_compressor.core.planner import build_convert_plan, build_quantize_plan
-from flag_compressor.core.policy import QuantizationPolicy
-from flag_compressor.core.validation import validate_artifact
-from flag_compressor.inspect.checkpoint_scanner import scan_hf_safetensors
+import flagos_compressor.formats.register  # noqa: F401
+import flagos_compressor.quantizers.register  # noqa: F401
+from flagos_compressor.backends.registry import build_backend
+from flagos_compressor.cli.main import main
+from flagos_compressor.core.executor import execute_plan
+from flagos_compressor.core.planner import build_convert_plan, build_quantize_plan
+from flagos_compressor.core.policy import QuantizationPolicy
+from flagos_compressor.core.validation import validate_artifact
+from flagos_compressor.inspect.checkpoint_scanner import scan_hf_safetensors
 
 
 def _make_checkpoint(path: Path) -> dict[str, str]:
@@ -62,6 +62,8 @@ def test_quantize_moe_end_to_end(tmp_path):
 
     with (output / "quantization_manifest.json").open() as f:
         manifest = json.load(f)
+    assert manifest["schema"] == "flagos-compressor.provenance.v1"
+    assert manifest["producer"]["name"] == "FlagOS-Compressor"
     routed = "model.layers.0.mlp.experts.0.w1.weight"
     routed_packed = routed.replace(".weight", ".weight_packed")
     routed_scale = routed.replace(".weight", ".weight_scale")
@@ -131,7 +133,7 @@ def test_legacy_int4_manifest_prevents_fp4_misclassification(tmp_path):
     with (source / "quant_manifest.json").open("w") as f:
         json.dump(
             {
-                "abi_version": "flag_compressor.artifact.v1",
+                "abi_version": "flagos_compressor.artifact.v1",
                 "tensors": {
                     weight_name: {
                         "format": "int4_symmetric_groupwise",

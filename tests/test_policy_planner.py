@@ -1,8 +1,8 @@
 import pytest
 
-from flag_compressor.core.planner import build_quantize_plan
-from flag_compressor.core.policy import QuantizationPolicy, UnselectedWeightsPolicy
-from flag_compressor.core.profile import ModelProfile, TensorInfo
+from flagos_compressor.core.planner import build_quantize_plan
+from flagos_compressor.core.policy import QuantizationPolicy, UnselectedWeightsPolicy
+from flagos_compressor.core.profile import ModelProfile, TensorInfo
 
 
 def _tensor(name, *, storage_format=None, dtype="bfloat16", shape=(4, 32), scale_name=None, tags=()):

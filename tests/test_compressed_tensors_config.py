@@ -1,6 +1,6 @@
 import pytest
 
-from flag_compressor.core.compressed_tensors import (
+from flagos_compressor.core.compressed_tensors import (
     build_compressed_tensors_config,
     compile_compressed_tensors_targets,
     validate_fusion_closure,

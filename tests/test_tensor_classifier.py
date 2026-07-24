@@ -1,4 +1,4 @@
-from flag_compressor.inspect.tensor_classifier import infer_storage_format
+from flagos_compressor.inspect.tensor_classifier import infer_storage_format
 
 
 def test_no_scale_returns_none():

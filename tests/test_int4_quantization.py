@@ -1,11 +1,11 @@
 import pytest
 import torch
 
-from flag_compressor.formats.int4_pack import (
+from flagos_compressor.formats.int4_pack import (
     pack_uint4b8_int32,
     unpack_uint4b8_int32,
 )
-from flag_compressor.quantizers.mse_int4 import mse_int4_quantize
+from flagos_compressor.quantizers.mse_int4 import mse_int4_quantize
 
 
 def test_pack_rejects_out_of_range_values():

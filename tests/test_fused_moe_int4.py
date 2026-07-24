@@ -5,25 +5,25 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
-import flag_compressor.formats.register  # noqa: F401
-import flag_compressor.quantizers.register  # noqa: F401
-from flag_compressor.backends.base import BackendRunContext
-from flag_compressor.backends.registry import build_backend
-from flag_compressor.core.executor import execute_plan
-from flag_compressor.core.moe_layout import (
+import flagos_compressor.formats.register  # noqa: F401
+import flagos_compressor.quantizers.register  # noqa: F401
+from flagos_compressor.backends.base import BackendRunContext
+from flagos_compressor.backends.registry import build_backend
+from flagos_compressor.core.executor import execute_plan
+from flagos_compressor.core.moe_layout import (
     Qwen35MoeLayout,
     select_moe_layout,
 )
-from flag_compressor.core.planner import build_quantize_plan
-from flag_compressor.core.policy import QuantizationPolicy
-from flag_compressor.core.profile import ModelProfile, TensorInfo
-from flag_compressor.core.report import ConversionReport
-from flag_compressor.core.validation import validate_artifact
-from flag_compressor.formats.base import get_weight_format
-from flag_compressor.formats.compressed_tensors_moe import fused_expert_bank_prefix
-from flag_compressor.formats.int4_pack import unpack_uint4b8_int32
-from flag_compressor.inspect.checkpoint_scanner import scan_hf_safetensors
-from flag_compressor.inspect.tensor_classifier import classify_weight
+from flagos_compressor.core.planner import build_quantize_plan
+from flagos_compressor.core.policy import QuantizationPolicy
+from flagos_compressor.core.profile import ModelProfile, TensorInfo
+from flagos_compressor.core.report import ConversionReport
+from flagos_compressor.core.validation import validate_artifact
+from flagos_compressor.formats.base import get_weight_format
+from flagos_compressor.formats.compressed_tensors_moe import fused_expert_bank_prefix
+from flagos_compressor.formats.int4_pack import unpack_uint4b8_int32
+from flagos_compressor.inspect.checkpoint_scanner import scan_hf_safetensors
+from flagos_compressor.inspect.tensor_classifier import classify_weight
 
 LAYOUT = Qwen35MoeLayout()
 

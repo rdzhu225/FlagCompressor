@@ -1,7 +1,7 @@
 from argparse import Namespace
 
-from flag_compressor.cli.helpers import build_quantization_policy
-from flag_compressor.core.policy import UnselectedWeightsPolicy
+from flagos_compressor.cli.helpers import build_quantization_policy
+from flagos_compressor.core.policy import UnselectedWeightsPolicy
 
 
 def test_simple_recipe_builds_policy(tmp_path):

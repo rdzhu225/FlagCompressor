@@ -1,6 +1,6 @@
-# FlagCompressor
+# FlagOS-Compressor
 
-FlagCompressor converts and quantizes HuggingFace `safetensors` checkpoints.
+FlagOS-Compressor converts and quantizes HuggingFace `safetensors` checkpoints.
 Its INT4 command supports module-level selection: selected weights are
 quantized, while other low-precision weights are converted to BF16.
 
@@ -13,7 +13,7 @@ pip install -e .
 ## Inspect
 
 ```bash
-flag-compressor inspect --input /path/to/model
+flagos-compressor inspect --input /path/to/model
 ```
 
 This reports detected weight formats and selectable groups such as `moe`,
@@ -22,7 +22,7 @@ This reports detected weight formats and selectable groups such as `moe`,
 ## Convert to BF16
 
 ```bash
-flag-compressor convert \
+flagos-compressor convert \
   --input /path/to/model \
   --output /path/to/model-bf16 \
   --backend cpu
@@ -31,7 +31,7 @@ flag-compressor convert \
 ## Quantize selected weights
 
 ```bash
-flag-compressor quantize \
+flagos-compressor quantize \
   --input /path/to/model \
   --output /path/to/model-int4 \
   --select moe \
@@ -101,7 +101,7 @@ provided, otherwise fall back to the recipe, otherwise to the default. At
 least one selector (via CLI or recipe) is required.
 
 ```bash
-flag-compressor quantize \
+flagos-compressor quantize \
   --input /path/to/model \
   --output /path/to/model-int4 \
   --recipe quantize.yaml
@@ -110,7 +110,7 @@ flag-compressor quantize \
 ## Validate
 
 ```bash
-flag-compressor validate --input /path/to/model-int4
+flagos-compressor validate --input /path/to/model-int4
 ```
 
 Validation checks the checkpoint index, stored tensors, INT4 metadata, and
