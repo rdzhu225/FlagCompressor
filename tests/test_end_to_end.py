@@ -109,6 +109,50 @@ def test_convert_to_bf16_end_to_end(tmp_path):
     assert validate_artifact(output)["valid"]
 
 
+def test_legacy_int4_manifest_prevents_fp4_misclassification(tmp_path):
+    source = tmp_path / "legacy-int4"
+    source.mkdir()
+    weight_name = "model.layers.0.mlp.down_proj.weight"
+    scale_name = f"{weight_name}.scale"
+    state = {
+        weight_name: torch.zeros((2, 16), dtype=torch.uint8),
+        scale_name: torch.ones((2, 1), dtype=torch.bfloat16),
+    }
+    shard = "model-00001-of-00001.safetensors"
+    save_file(state, str(source / shard))
+    with (source / "model.safetensors.index.json").open("w") as f:
+        json.dump(
+            {
+                "metadata": {},
+                "weight_map": {name: shard for name in state},
+            },
+            f,
+        )
+    with (source / "quant_manifest.json").open("w") as f:
+        json.dump(
+            {
+                "abi_version": "flag_compressor.artifact.v1",
+                "tensors": {
+                    weight_name: {
+                        "format": "int4_symmetric_groupwise",
+                        "logical_shape": [2, 32],
+                        "scale": scale_name,
+                    }
+                },
+            },
+            f,
+        )
+
+    profile = scan_hf_safetensors(source)
+    tensor = profile.tensors[weight_name]
+    assert tensor.storage_format == "int4_symmetric_groupwise"
+    assert profile.metadata["quantization_manifest_file"] == "quant_manifest.json"
+
+    plan = build_convert_plan(profile)
+    assert not plan.actions
+    assert [item.name for item in plan.unmatched_quantized_tensors] == [weight_name]
+
+
 def test_cli_commands_and_implicit_convert_dry_run(tmp_path, capsys):
     source = tmp_path / "source"
     _make_checkpoint(source)

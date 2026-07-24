@@ -89,10 +89,10 @@ Recipe fields:
 - `exclude` (list): tensors to skip, same shape as `select`. Applied on top of
   the `select` set. Mirrors `--exclude` / `--exclude-name`.
 - `unselected` (mapping): how source-quantized weights outside the selected set
-  are handled. `strategy: convert` (default) with `format: bf16` dequantizes
-  low-precision weights to BF16; `strategy: preserve` leaves them in their
-  original storage format (omit `format`). Currently the inference-safe
-  strategy is conversion to BF16.
+  are handled. Currently only `strategy: convert` (default) with
+  `format: bf16` is supported; it dequantizes low-precision weights to BF16.
+  `strategy: preserve` is reserved for a future runtime-compatible mixed-format
+  exporter and is rejected for now.
 
 CLI flags and recipe fields are additive: `select` / `exclude` entries from the
 recipe are merged with the corresponding CLI flags, and scalar fields

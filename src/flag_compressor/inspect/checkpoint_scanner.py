@@ -14,18 +14,38 @@ from flag_compressor.inspect.tensor_classifier import (
 from flag_compressor.io.hf_checkpoint import HfSafetensorsCheckpoint
 
 
+_CURRENT_MANIFEST = "quantization_manifest.json"
+_LEGACY_MANIFEST = "quant_manifest.json"
+
+
+def _load_manifest(model_dir: Path) -> tuple[dict, str | None, str | None]:
+    """Load current metadata, falling back to the legacy artifact manifest.
+
+    Legacy INT4 is no longer a supported input format, but retaining its
+    declared tensor format prevents the scanner from guessing that its
+    byte-packed weights are MXFP4. The planner can then reject the unsupported
+    format explicitly instead of decoding it with the wrong codec.
+    """
+    current_path = model_dir / _CURRENT_MANIFEST
+    legacy_path = model_dir / _LEGACY_MANIFEST
+    if current_path.exists():
+        with current_path.open("r", encoding="utf-8") as f:
+            manifest = json.load(f)
+        return manifest, manifest.get("schema"), _CURRENT_MANIFEST
+    if legacy_path.exists():
+        with legacy_path.open("r", encoding="utf-8") as f:
+            manifest = json.load(f)
+        return manifest, manifest.get("abi_version"), _LEGACY_MANIFEST
+    return {}, None, None
+
+
 def scan_hf_safetensors(model_path: str | Path) -> ModelProfile:
     model_dir = Path(model_path)
     checkpoint = HfSafetensorsCheckpoint(model_dir)
     scale_map = build_scale_map(set(checkpoint.weight_map.keys()))
-    manifest_specs: dict[str, dict] = {}
-    manifest_path = model_dir / "quantization_manifest.json"
-    manifest_abi = None
-    if manifest_path.exists():
-        with manifest_path.open("r", encoding="utf-8") as f:
-            manifest = json.load(f)
-        manifest_abi = manifest.get("schema")
-        manifest_specs = dict(manifest.get("tensors") or {})
+    manifest, manifest_abi, manifest_filename = _load_manifest(model_dir)
+    manifest_specs: dict[str, dict] = dict(manifest.get("tensors") or {})
+    if manifest_specs:
         for weight_name, spec in manifest_specs.items():
             scale_name = spec.get("scale")
             if weight_name in checkpoint.weight_map and scale_name in checkpoint.weight_map:
@@ -44,6 +64,7 @@ def scan_hf_safetensors(model_path: str | Path) -> ModelProfile:
             "num_index_keys": len(checkpoint.weight_map),
             "num_shards": len(checkpoint.shard_files()),
             "quantization_manifest_schema": manifest_abi,
+            "quantization_manifest_file": manifest_filename,
         },
     )
 

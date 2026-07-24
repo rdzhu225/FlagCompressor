@@ -304,6 +304,12 @@ def build_quantize_plan(
                     f"Selected tensor {tensor.name!r} has logical shape {logical_shape}; "
                     f"in_features must be divisible by group_size={policy.group_size}"
                 )
+            if logical_shape[1] % 8:
+                raise ValueError(
+                    f"Selected tensor {tensor.name!r} has in_features="
+                    f"{logical_shape[1]}; INT4 pack-quantized storage requires "
+                    "in_features divisible by 8"
+                )
             plan.add_action(
                 tensor,
                 input_format=input_format,

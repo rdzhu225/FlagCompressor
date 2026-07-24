@@ -77,3 +77,14 @@ def test_selected_shape_must_align_to_group_size():
     profile.tensors[name] = _tensor(name, shape=(4, 30), tags=("attention", "linear"))
     with pytest.raises(ValueError, match="divisible"):
         build_quantize_plan(profile, QuantizationPolicy(selections=("attention",)))
+
+
+def test_selected_shape_must_align_to_pack_word():
+    profile = _profile()
+    name = "model.layers.0.self_attn.o_proj.weight"
+    profile.tensors[name] = _tensor(name, shape=(4, 6), tags=("attention", "linear"))
+    with pytest.raises(ValueError, match="divisible by 8"):
+        build_quantize_plan(
+            profile,
+            QuantizationPolicy(selections=("attention",), group_size=2),
+        )
