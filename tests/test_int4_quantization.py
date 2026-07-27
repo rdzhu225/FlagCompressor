@@ -1,20 +1,24 @@
 import pytest
 import torch
 
-from flag_compressor.formats.int4_pack import pack_signed_int4, unpack_signed_int4
-from flag_compressor.quantizers.mse_int4 import mse_int4_quantize
-
-
-def test_pack_unpack_signed_int4_roundtrip():
-    values = torch.tensor([[-8, -7, -1, 0, 1, 6, 7, 3]], dtype=torch.int8)
-    packed = pack_signed_int4(values)
-    assert packed.dtype == torch.uint8
-    assert torch.equal(unpack_signed_int4(packed), values)
+from flagos_compressor.formats.int4_pack import (
+    pack_uint4b8_int32,
+    unpack_uint4b8_int32,
+)
+from flagos_compressor.quantizers.mse_int4 import mse_int4_quantize
 
 
 def test_pack_rejects_out_of_range_values():
     with pytest.raises(ValueError, match=r"\[-8, 7\]"):
-        pack_signed_int4(torch.tensor([[8, 0]], dtype=torch.int8))
+        pack_uint4b8_int32(torch.tensor([[8, 0, 0, 0, 0, 0, 0, 0]], dtype=torch.int8))
+
+
+def test_compressed_tensors_pack_roundtrip():
+    values = torch.tensor([[-8, -7, -1, 0, 1, 6, 7, 3]], dtype=torch.int8)
+    packed = pack_uint4b8_int32(values)
+    assert packed.dtype == torch.int32
+    assert packed.shape == (1, 1)
+    assert torch.equal(unpack_uint4b8_int32(packed), values)
 
 
 def test_mse_quantizer_shapes_and_zero_group():

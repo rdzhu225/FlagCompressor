@@ -1,8 +1,8 @@
 import pytest
 
-from flag_compressor.core.planner import build_quantize_plan
-from flag_compressor.core.policy import QuantizationPolicy
-from flag_compressor.core.profile import ModelProfile, TensorInfo
+from flagos_compressor.core.planner import build_quantize_plan
+from flagos_compressor.core.policy import QuantizationPolicy, UnselectedWeightsPolicy
+from flagos_compressor.core.profile import ModelProfile, TensorInfo
 
 
 def _tensor(name, *, storage_format=None, dtype="bfloat16", shape=(4, 32), scale_name=None, tags=()):
@@ -43,21 +43,32 @@ def _profile():
 def test_moe_selection_includes_routed_and_shared():
     plan = build_quantize_plan(_profile(), QuantizationPolicy(selections=("moe",)))
     assert plan.input_format_counts == {"fp4_e2m1_e8m0": 1, "bf16": 1}
-    assert plan.output_format_counts == {"int4_symmetric_groupwise": 2}
+    assert plan.output_format_counts == {
+        "compressed_tensors_int4_groupwise": 2
+    }
     assert len(plan.kept_tensors) == 1
 
 
 def test_regex_can_select_arbitrary_linear():
     policy = QuantizationPolicy(include_names=(r"self_attn\.o_proj\.weight$",))
     plan = build_quantize_plan(_profile(), policy)
-    assert plan.output_format_counts["int4_symmetric_groupwise"] == 1
+    assert plan.output_format_counts["compressed_tensors_int4_groupwise"] == 1
     assert plan.output_format_counts["bf16"] == 1
 
 
 def test_builtin_exclude_removes_shared_experts():
     policy = QuantizationPolicy(selections=("moe",), exclude_selections=("moe.shared",))
     plan = build_quantize_plan(_profile(), policy)
-    assert plan.output_format_counts["int4_symmetric_groupwise"] == 1
+    assert plan.output_format_counts["compressed_tensors_int4_groupwise"] == 1
+
+
+def test_preserve_policy_has_an_explicit_runtime_contract_boundary():
+    policy = QuantizationPolicy(
+        selections=("moe",),
+        unselected=UnselectedWeightsPolicy(strategy="preserve", format=None),
+    )
+    with pytest.raises(ValueError, match="runtime config exporter"):
+        build_quantize_plan(_profile(), policy)
 
 
 def test_selected_shape_must_align_to_group_size():
@@ -66,3 +77,14 @@ def test_selected_shape_must_align_to_group_size():
     profile.tensors[name] = _tensor(name, shape=(4, 30), tags=("attention", "linear"))
     with pytest.raises(ValueError, match="divisible"):
         build_quantize_plan(profile, QuantizationPolicy(selections=("attention",)))
+
+
+def test_selected_shape_must_align_to_pack_word():
+    profile = _profile()
+    name = "model.layers.0.self_attn.o_proj.weight"
+    profile.tensors[name] = _tensor(name, shape=(4, 6), tags=("attention", "linear"))
+    with pytest.raises(ValueError, match="divisible by 8"):
+        build_quantize_plan(
+            profile,
+            QuantizationPolicy(selections=("attention",), group_size=2),
+        )
