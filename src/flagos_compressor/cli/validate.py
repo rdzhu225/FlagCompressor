@@ -13,6 +13,7 @@ def run(args) -> None:
         print(f"Tensors: {result['tensors']}")
         print(f"Shards: {result['shards']}")
         print(f"INT4 tensors: {result['int4_tensors']}")
+        print(f"INT8 tensors: {result['int8_tensors']}")
         for error in result["errors"]:
             print(f"  ERROR: {error}")
     if not result["valid"]:

@@ -96,6 +96,20 @@ def test_planner_selects_fused_banks_as_moe_int4():
     assert not plan.kept_tensors
 
 
+def test_planner_selects_fused_banks_as_moe_int8():
+    plan = build_quantize_plan(
+        _profile(),
+        QuantizationPolicy(
+            selections=("moe.routed",),
+            num_bits=8,
+            group_size=32,
+        ),
+        LAYOUT,
+    )
+    assert plan.output_format_counts == {"compressed_tensors_int8_moe_fused": 2}
+    assert not plan.kept_tensors
+
+
 def test_planner_requires_layout_for_fused_experts():
     with pytest.raises(ValueError, match="requires a MoeLayout"):
         build_quantize_plan(_profile(), QuantizationPolicy(selections=("moe.routed",)))
@@ -205,6 +219,42 @@ def test_down_proj_maps_to_single_projection():
     )
     assert len(res.tensors) == 2 * 1 * 3
     assert "m.mlp.experts.1.down_proj.weight_packed" in res.tensors
+
+
+def test_fused_int8_format_roundtrip_shape_and_values():
+    torch.manual_seed(2)
+    bank = torch.randn(2, 16, 64, dtype=torch.bfloat16)
+    backend = build_backend("cpu", None)
+    ctx = BackendRunContext(report=ConversionReport(backend="cpu"))
+    fmt = get_weight_format("compressed_tensors_int8_moe_fused")
+    res = fmt.from_canonical(
+        "m.mlp.experts.gate_up_proj",
+        bank,
+        backend,
+        ctx,
+        {
+            "quantizer": "mse",
+            "group_size": 32,
+            "n_candidates": 20,
+            "proj_kind": "gate_up_proj",
+            "layout": LAYOUT.name,
+            "num_experts": 2,
+        },
+    )
+    base = "m.mlp.experts.0.gate_proj"
+    packed = res.tensors[base + ".weight_packed"]
+    scale = res.tensors[base + ".weight_scale"]
+    assert packed.shape == (8, 16)
+    assert scale.shape == (8, 2)
+
+    from flagos_compressor.formats.int8_pack import unpack_uint8b128_int32
+
+    quantized = unpack_uint8b128_int32(packed, in_features=64).float()
+    dequantized = (
+        quantized.reshape(-1, 32) * scale.float().reshape(-1, 1)
+    ).reshape(8, 64)
+    original = bank[0, :8, :].float()
+    assert ((dequantized - original).norm() / original.norm()).item() < 0.02
 
 
 # --------------------------------------------------------------------------

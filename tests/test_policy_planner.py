@@ -88,3 +88,69 @@ def test_selected_shape_must_align_to_pack_word():
             profile,
             QuantizationPolicy(selections=("attention",), group_size=2),
         )
+
+
+def test_int8_selection_uses_w8a16_format_without_int4_pack_constraint():
+    profile = _profile()
+    name = "model.layers.0.self_attn.o_proj.weight"
+    profile.tensors[name] = _tensor(
+        name,
+        shape=(4, 12),
+        tags=("attention", "linear"),
+    )
+    plan = build_quantize_plan(
+        profile,
+        QuantizationPolicy(
+            selections=("attention",),
+            num_bits=8,
+            group_size=4,
+        ),
+    )
+    assert plan.output_format_counts["compressed_tensors_int8_groupwise"] == 1
+    action = next(
+        action
+        for action in plan.actions
+        if action.output_format.name == "compressed_tensors_int8_groupwise"
+    )
+    assert action.output_format.params["num_bits"] == 8
+
+
+def test_int8_channel_selection_does_not_require_group_alignment():
+    profile = _profile()
+    name = "model.layers.0.self_attn.o_proj.weight"
+    profile.tensors[name] = _tensor(
+        name,
+        shape=(4, 13),
+        tags=("attention", "linear"),
+    )
+    plan = build_quantize_plan(
+        profile,
+        QuantizationPolicy(
+            selections=("attention",),
+            num_bits=8,
+            strategy="channel",
+        ),
+    )
+    assert plan.output_format_counts == {
+        "compressed_tensors_int8_channelwise": 1,
+        "bf16": 1,
+    }
+    channel_action = next(
+        action
+        for action in plan.actions
+        if action.output_format.name == "compressed_tensors_int8_channelwise"
+    )
+    assert channel_action.output_format.params["strategy"] == "channel"
+    assert channel_action.output_format.params["group_size"] is None
+
+
+def test_int8_channel_rejects_routed_moe():
+    with pytest.raises(ValueError, match="MoE.*group strategy"):
+        build_quantize_plan(
+            _profile(),
+            QuantizationPolicy(
+                selections=("moe.routed",),
+                num_bits=8,
+                strategy="channel",
+            ),
+        )

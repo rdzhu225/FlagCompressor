@@ -81,3 +81,72 @@ class CompressedTensorsInt4GroupwiseFormat(WeightFormat):
 
 
 register_weight_format(CompressedTensorsInt4GroupwiseFormat())
+
+
+class CompressedTensorsInt8GroupwiseFormat(WeightFormat):
+    """Stable ``compressed-tensors`` W8A16 ``pack-quantized`` serialization."""
+
+    name = "compressed_tensors_int8_groupwise"
+    default_strategy = "group"
+
+    def from_canonical(
+        self,
+        tensor_name: str,
+        weight: torch.Tensor,
+        backend: QuantBackend,
+        context: BackendRunContext,
+        params: dict[str, Any],
+    ) -> ArtifactResult:
+        quantizer = params.get("quantizer", "mse")
+        if quantizer != "mse":
+            raise NotImplementedError(f"Unsupported INT8 quantizer: {quantizer}")
+        logical_shape = tuple(int(dim) for dim in weight.shape)
+        if len(logical_shape) != 2:
+            raise ValueError(
+                f"compressed-tensors W8A16 requires a 2D weight, got {logical_shape}"
+            )
+        strategy = params.get("strategy", self.default_strategy)
+        if strategy == "channel":
+            effective_group_size = logical_shape[1]
+        elif strategy == "group":
+            effective_group_size = int(params.get("group_size", 128))
+        else:
+            raise ValueError(f"Unsupported INT8 weight strategy: {strategy}")
+        int8_values, scales = backend.run(
+            "mse_int8_quant",
+            weight,
+            group_size=effective_group_size,
+            n_candidates=int(params.get("n_candidates", 200)),
+            chunk_size=int(params.get("chunk_size", 1024)),
+            context=context,
+        )
+        packed = backend.run(
+            "int8_pack_uint8b128_int32",
+            int8_values,
+            context=context,
+        )
+        names = compressed_tensor_names(tensor_name)
+        shape = torch.tensor(logical_shape, dtype=torch.int64)
+        return ArtifactResult(
+            tensors={
+                names.weight: packed.cpu(),
+                names.scale: scales.cpu(),
+                names.shape: shape,
+            },
+            generated_tensor_names=(names.weight, names.scale, names.shape),
+        )
+
+
+register_weight_format(CompressedTensorsInt8GroupwiseFormat())
+
+
+class CompressedTensorsInt8ChannelwiseFormat(
+    CompressedTensorsInt8GroupwiseFormat
+):
+    """Per-output-channel W8A16 serialization."""
+
+    name = "compressed_tensors_int8_channelwise"
+    default_strategy = "channel"
+
+
+register_weight_format(CompressedTensorsInt8ChannelwiseFormat())

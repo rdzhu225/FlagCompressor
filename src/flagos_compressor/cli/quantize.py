@@ -46,16 +46,24 @@ def run(args) -> None:
     moe_layout = _load_moe_layout(args.input, profile, policy)
     plan = build_quantize_plan(profile, policy, moe_layout)
     ensure_no_unmatched(plan)
-    int4_count = plan.output_format_counts.get(
-        "compressed_tensors_int4_groupwise",
+    num_bits = policy.num_bits
+    linear_format = (
+        "compressed_tensors_int8_channelwise"
+        if policy.strategy == "channel"
+        else f"compressed_tensors_int{num_bits}_groupwise"
+    )
+    quantized_count = plan.output_format_counts.get(
+        linear_format,
         0,
     )
     fused_moe_count = plan.output_format_counts.get(
-        "compressed_tensors_int4_moe_fused",
+        f"compressed_tensors_int{num_bits}_moe_fused",
         0,
     )
-    if int4_count == 0 and fused_moe_count == 0:
-        raise RuntimeError("The INT4 selectors did not match any supported tensors")
+    if quantized_count == 0 and fused_moe_count == 0:
+        raise RuntimeError(
+            f"The INT{num_bits} selectors did not match any supported tensors"
+        )
     if args.dry_run:
         print_plan(plan)
         return
@@ -65,8 +73,9 @@ def run(args) -> None:
         logger.warning("backend %r is unavailable; CPU fallback may be used.", backend.name)
     report = execute_plan(args.input, args.output, plan, backend)
     print("Done.")
-    print(f"INT4 tensors: {int4_count}")
-    print(f"INT4 fused MoE banks: {fused_moe_count}")
+    print(f"Strategy: {policy.strategy}")
+    print(f"INT{num_bits} tensors: {quantized_count}")
+    print(f"INT{num_bits} fused MoE banks: {fused_moe_count}")
     print(f"Converted tensors: {report.converted}")
     print(f"Kept tensors: {report.kept}")
     print(f"Manifest: {args.output}/quantization_manifest.json")
