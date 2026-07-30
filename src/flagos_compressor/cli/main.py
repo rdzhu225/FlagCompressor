@@ -70,6 +70,9 @@ def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(raw)
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
+    # Keep operational CLI messages visible by default without enabling noisy
+    # INFO logs from third-party dependencies.
+    logging.getLogger("flagos_compressor").setLevel(logging.INFO)
 
     if args.command == "convert":
         from flagos_compressor.cli import convert
