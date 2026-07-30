@@ -185,3 +185,100 @@ def test_cli_commands_and_implicit_convert_dry_run(tmp_path, capsys):
     assert "compressed_tensors_int4_groupwise" in output
     assert "fp4_e2m1_e8m0" in output
     assert "bf16" in output
+
+
+def test_int8_weight_quantization_end_to_end(tmp_path):
+    source = tmp_path / "source"
+    output = tmp_path / "quantized-int8"
+    _make_checkpoint(source)
+    profile = scan_hf_safetensors(source)
+    plan = build_quantize_plan(
+        profile,
+        QuantizationPolicy(
+            selections=("attention",),
+            num_bits=8,
+            group_size=128,
+            n_candidates=8,
+            chunk_size=16,
+        ),
+    )
+    execute_plan(source, output, plan, build_backend("cpu"))
+
+    logical_name = "model.layers.0.self_attn.o_proj.weight"
+    packed_name = logical_name.replace(".weight", ".weight_packed")
+    scale_name = logical_name.replace(".weight", ".weight_scale")
+    shard = load_file(output / "model-00001-of-00001.safetensors")
+    assert shard[packed_name].dtype == torch.int32
+    assert shard[packed_name].shape == (128, 32)
+    assert shard[scale_name].dtype == torch.bfloat16
+    assert shard[scale_name].shape == (128, 1)
+
+    with (output / "config.json").open() as f:
+        config = json.load(f)
+    scheme = next(iter(config["quantization_config"]["config_groups"].values()))
+    assert scheme["weights"]["num_bits"] == 8
+    assert scheme["weights"]["group_size"] == 128
+
+    with (output / "quantization_manifest.json").open() as f:
+        manifest = json.load(f)
+    assert manifest["artifact"]["weight_encoding"] == "uint8b128"
+    assert manifest["artifact"]["values_per_word"] == 4
+    assert (
+        manifest["tensors"][packed_name]["format"]
+        == "compressed-tensors-pack-quantized-int8"
+    )
+
+    validation = validate_artifact(output)
+    assert validation["valid"], validation["errors"]
+    assert validation["int8_tensors"] == 1
+    rescanned = scan_hf_safetensors(output)
+    assert (
+        rescanned.tensors[packed_name].storage_format
+        == "compressed-tensors-pack-quantized-int8"
+    )
+
+
+def test_int8_channel_weight_quantization_end_to_end(tmp_path):
+    source = tmp_path / "source"
+    output = tmp_path / "quantized-int8-channel"
+    _make_checkpoint(source)
+    profile = scan_hf_safetensors(source)
+    plan = build_quantize_plan(
+        profile,
+        QuantizationPolicy(
+            selections=("attention",),
+            num_bits=8,
+            strategy="channel",
+            n_candidates=8,
+            chunk_size=16,
+        ),
+    )
+    execute_plan(source, output, plan, build_backend("cpu"))
+
+    logical_name = "model.layers.0.self_attn.o_proj.weight"
+    packed_name = logical_name.replace(".weight", ".weight_packed")
+    scale_name = logical_name.replace(".weight", ".weight_scale")
+    shard = load_file(output / "model-00001-of-00001.safetensors")
+    assert shard[packed_name].shape == (128, 32)
+    assert shard[scale_name].shape == (128, 1)
+
+    config = json.loads((output / "config.json").read_text())
+    scheme = config["quantization_config"]["config_groups"][
+        "w8a16_channel"
+    ]["weights"]
+    assert scheme["strategy"] == "channel"
+    assert "group_size" not in scheme
+
+    manifest = json.loads(
+        (output / "quantization_manifest.json").read_text()
+    )
+    assert manifest["artifact"]["strategy"] == "channel"
+    assert manifest["artifact"]["scale_layout"] == "row_channel"
+    spec = manifest["tensors"][packed_name]
+    assert spec["strategy"] == "channel"
+    assert "group_size" not in spec
+    assert spec["scale_shape"] == [128, 1]
+
+    validation = validate_artifact(output)
+    assert validation["valid"], validation["errors"]
+    assert validation["int8_tensors"] == 1

@@ -43,8 +43,8 @@ def _per_expert_projections(
     return [(proj_kind, expert)]
 
 
-class CompressedTensorsInt4MoEFusedFormat(WeightFormat):
-    """W4A16 ``pack-quantized`` serialization of a fused 3D routed-expert bank.
+class _CompressedTensorsIntMoEFusedFormat(WeightFormat):
+    """Pack-quantized serialization of a fused 3D routed-expert bank.
 
     Each expert of the ``[num_experts, out, in]`` bank is quantized as an
     independent 2D weight and written under the standard per-expert
@@ -53,7 +53,7 @@ class CompressedTensorsInt4MoEFusedFormat(WeightFormat):
     llm-compressor and consumed by vLLM's non-fused expert loader.
     """
 
-    name = "compressed_tensors_int4_moe_fused"
+    num_bits: int
 
     def from_canonical(
         self,
@@ -65,15 +65,20 @@ class CompressedTensorsInt4MoEFusedFormat(WeightFormat):
     ) -> ArtifactResult:
         quantizer = params.get("quantizer", "mse")
         if quantizer != "mse":
-            raise NotImplementedError(f"Unsupported INT4 quantizer: {quantizer}")
+            raise NotImplementedError(
+                f"Unsupported INT{self.num_bits} quantizer: {quantizer}"
+            )
         if weight.dim() != 3:
             raise ValueError(
-                f"fused MoE W4A16 requires a 3D bank, got shape {tuple(weight.shape)}"
+                f"fused MoE W{self.num_bits}A16 requires a 3D bank, "
+                f"got shape {tuple(weight.shape)}"
             )
         proj_kind = params.get("proj_kind") or tensor_name.split(".")[-1]
-        group_size = int(params.get("group_size", 32))
+        group_size = int(params.get("group_size", 32 if self.num_bits == 4 else 128))
         n_candidates = int(params.get("n_candidates", 200))
-        chunk_size = int(params.get("chunk_size", 4096))
+        chunk_size = int(
+            params.get("chunk_size", 4096 if self.num_bits == 4 else 1024)
+        )
         layout = layout_by_name(params["layout"])
 
         prefix = fused_expert_bank_prefix(tensor_name)
@@ -89,8 +94,8 @@ class CompressedTensorsInt4MoEFusedFormat(WeightFormat):
             for proj_name, proj_weight in _per_expert_projections(proj_kind, expert):
                 proj_weight = proj_weight.contiguous()
                 out_features, in_features = (int(d) for d in proj_weight.shape)
-                int4_values, scales = backend.run(
-                    "mse_int4_quant",
+                quantized, scales = backend.run(
+                    f"mse_int{self.num_bits}_quant",
                     proj_weight,
                     group_size=group_size,
                     n_candidates=n_candidates,
@@ -98,8 +103,12 @@ class CompressedTensorsInt4MoEFusedFormat(WeightFormat):
                     context=context,
                 )
                 packed = backend.run(
-                    "int4_pack_uint4b8_int32",
-                    int4_values,
+                    (
+                        "int4_pack_uint4b8_int32"
+                        if self.num_bits == 4
+                        else "int8_pack_uint8b128_int32"
+                    ),
+                    quantized,
                     context=context,
                 )
                 base = f"{prefix}.{expert_id}.{proj_name}"
@@ -119,4 +128,19 @@ class CompressedTensorsInt4MoEFusedFormat(WeightFormat):
         )
 
 
+class CompressedTensorsInt4MoEFusedFormat(_CompressedTensorsIntMoEFusedFormat):
+    """W4A16 serialization of a fused routed-expert bank."""
+
+    name = "compressed_tensors_int4_moe_fused"
+    num_bits = 4
+
+
+class CompressedTensorsInt8MoEFusedFormat(_CompressedTensorsIntMoEFusedFormat):
+    """W8A16 serialization of a fused routed-expert bank."""
+
+    name = "compressed_tensors_int8_moe_fused"
+    num_bits = 8
+
+
 register_weight_format(CompressedTensorsInt4MoEFusedFormat())
+register_weight_format(CompressedTensorsInt8MoEFusedFormat())

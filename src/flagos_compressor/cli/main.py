@@ -26,7 +26,10 @@ def build_parser() -> argparse.ArgumentParser:
     convert.add_argument("--dry-run", action="store_true")
     _add_backend_args(convert)
 
-    quantize = subparsers.add_parser("quantize", help="Quantize selected weights to INT4.")
+    quantize = subparsers.add_parser(
+        "quantize",
+        help="Quantize selected weights to INT4 or INT8.",
+    )
     quantize.add_argument("--input", required=True)
     quantize.add_argument("--output", required=True)
     quantize.add_argument("--recipe")
@@ -34,6 +37,12 @@ def build_parser() -> argparse.ArgumentParser:
     quantize.add_argument("--exclude", action="append", choices=sorted(BUILTIN_SELECTIONS))
     quantize.add_argument("--select-name", action="append", metavar="REGEX")
     quantize.add_argument("--exclude-name", action="append", metavar="REGEX")
+    quantize.add_argument("--bits", type=int, choices=[4, 8], default=None)
+    quantize.add_argument(
+        "--strategy",
+        choices=["group", "channel"],
+        default=None,
+    )
     quantize.add_argument("--method", choices=["mse"], default=None)
     quantize.add_argument("--group-size", type=int, default=None)
     quantize.add_argument("--n-candidates", type=int, default=None)

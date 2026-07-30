@@ -9,6 +9,16 @@ from flagos_compressor.core.policy import QuantizationPolicy, UnselectedWeightsP
 
 def print_plan(plan: ExecutionPlan) -> None:
     print("Execution plan")
+    algorithm = plan.metadata.get("algorithm") or {}
+    if algorithm:
+        detail = (
+            f"INT{algorithm.get('num_bits')} "
+            f"{algorithm.get('strategy')} "
+            f"{algorithm.get('name')}"
+        )
+        if algorithm.get("group_size") is not None:
+            detail += f" group_size={algorithm['group_size']}"
+        print(f"  quantization: {detail}")
     print("  input formats")
     for input_format, count in sorted(plan.input_format_counts.items()):
         print(f"    {input_format}: {count}")
@@ -42,6 +52,8 @@ def load_quantize_recipe(path: str | Path) -> dict:
         raise ValueError("Quantize recipe must be a YAML mapping")
     allowed = {
         "version",
+        "bits",
+        "strategy",
         "method",
         "group_size",
         "n_candidates",
@@ -100,21 +112,35 @@ def build_quantization_policy(args) -> QuantizationPolicy:
     include_names = tuple(recipe_names + list(args.select_name or ()))
     exclude_names = tuple(recipe_excludes + list(args.exclude_name or ()))
     if not selections and not include_names:
-        raise ValueError("No INT4 weights selected; use --select/--select-name or a recipe")
+        raise ValueError(
+            "No weights selected; use --select/--select-name or a recipe"
+        )
 
     def value(name: str, default):
         cli_value = getattr(args, name, None)
         return cli_value if cli_value is not None else recipe.get(name, default)
 
+    num_bits = int(value("bits", 4))
+    strategy = value("strategy", "group")
+    requested_group_size = value("group_size", None)
+    if strategy == "group" and requested_group_size is None:
+        requested_group_size = 32 if num_bits == 4 else 128
+    default_chunk_size = 4096 if num_bits == 4 else 1024
     return QuantizationPolicy(
         selections=selections,
         exclude_selections=exclude_selections,
         include_names=include_names,
         exclude_names=exclude_names,
         method=value("method", "mse"),
-        group_size=int(value("group_size", 32)),
+        num_bits=num_bits,
+        strategy=strategy,
+        group_size=(
+            int(requested_group_size)
+            if requested_group_size is not None
+            else None
+        ),
         n_candidates=int(value("n_candidates", 200)),
-        chunk_size=int(value("chunk_size", 4096)),
+        chunk_size=int(value("chunk_size", default_chunk_size)),
         unselected=_parse_unselected_policy(recipe.get("unselected")),
     )
 

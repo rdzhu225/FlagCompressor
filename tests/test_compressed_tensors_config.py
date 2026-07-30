@@ -71,3 +71,40 @@ def test_rejects_partial_routed_moe_bank():
     }
     with pytest.raises(ValueError, match="partially selected"):
         validate_fusion_closure(weights, selected)
+
+
+def test_builds_w8a16_group_config():
+    weights = {"model.layers.0.self_attn.o_proj.weight"}
+    config = build_compressed_tensors_config(
+        weights,
+        weights,
+        num_bits=8,
+        group_size=128,
+    )
+    scheme = config["config_groups"]["w8a16_g128"]["weights"]
+    assert scheme == {
+        "num_bits": 8,
+        "type": "int",
+        "strategy": "group",
+        "group_size": 128,
+        "symmetric": True,
+        "dynamic": False,
+    }
+
+
+def test_builds_w8a16_channel_config_without_group_size():
+    weights = {"model.layers.0.self_attn.o_proj.weight"}
+    config = build_compressed_tensors_config(
+        weights,
+        weights,
+        num_bits=8,
+        strategy="channel",
+    )
+    scheme = config["config_groups"]["w8a16_channel"]["weights"]
+    assert scheme == {
+        "num_bits": 8,
+        "type": "int",
+        "strategy": "channel",
+        "symmetric": True,
+        "dynamic": False,
+    }

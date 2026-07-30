@@ -130,15 +130,20 @@ def _plan_fused_moe_expert(
     proj_kind: str,
     layout: MoeLayout,
 ) -> None:
-    """Plan INT4 quantization of a fused 3D routed-expert bank.
+    """Plan integer quantization of a fused 3D routed-expert bank.
 
     Each expert is quantized as an independent 2D ``[out, in]`` weight. The
     per-expert ``(out, in)`` is derived from the model's :class:`MoeLayout`
-    (axis order is model specific). ``in`` must be divisible by the group size,
-    and — because the packed storage uses int32 words of eight nibbles — by 8.
-    A fused ``gate_up_proj`` must have an even split dimension.
+    (axis order is model specific). ``in`` must be divisible by the group size;
+    INT4 additionally requires divisibility by eight for the existing nibble
+    packer. A fused ``gate_up_proj`` must have an even split dimension.
     """
     shape = tensor.effective_logical_shape
+    if policy.strategy != "group" or policy.group_size is None:
+        raise ValueError(
+            "Fused routed MoE weights require group quantization with a "
+            "group_size; vLLM WNA16 MoE does not support channel strategy"
+        )
     if len(shape) != 3:
         raise ValueError(
             f"Selected fused expert {tensor.name!r} has shape {shape}; expected 3D"
@@ -155,7 +160,7 @@ def _plan_fused_moe_expert(
             f"Selected fused expert {tensor.name!r} has in_features={in_features}; "
             f"must be divisible by group_size={policy.group_size}"
         )
-    if in_features % 8:
+    if policy.num_bits == 4 and in_features % 8:
         raise ValueError(
             f"Selected fused expert {tensor.name!r} has in_features={in_features}; "
             "INT4 pack-quantized storage requires in_features divisible by 8"
@@ -164,9 +169,11 @@ def _plan_fused_moe_expert(
         tensor,
         input_format=FormatSpec("bf16"),
         output_format=FormatSpec(
-            "compressed_tensors_int4_moe_fused",
+            f"compressed_tensors_int{policy.num_bits}_moe_fused",
             {
                 "quantizer": policy.method,
+                "num_bits": policy.num_bits,
+                "strategy": policy.strategy,
                 "group_size": policy.group_size,
                 "n_candidates": policy.n_candidates,
                 "chunk_size": policy.chunk_size,
@@ -177,7 +184,7 @@ def _plan_fused_moe_expert(
                 "in_features": in_features,
             },
         ),
-        rule_name="user_selected_int4_moe",
+        rule_name=f"user_selected_int{policy.num_bits}_moe",
     )
 
 
@@ -190,7 +197,7 @@ def _validate_fused_bank_closure(
     vLLM treats the whole FusedMoE (gate/up/down of every expert) as one
     quantized unit. If any projection bank of an ``experts`` module is selected,
     all of that module's banks must be selected too — otherwise the exported
-    config marks the unit INT4 while some projections are still bf16, which
+    config marks the unit quantized while some projections are still bf16, which
     fails at load time.
     """
     selected_by_module: dict[str, set[str]] = defaultdict(set)
@@ -269,6 +276,8 @@ def build_quantize_plan(
                     if policy.method == "mse"
                     else policy.method
                 ),
+                "num_bits": policy.num_bits,
+                "strategy": policy.strategy,
                 "group_size": policy.group_size,
                 "n_candidates": policy.n_candidates,
                 "chunk_size": policy.chunk_size,
@@ -281,6 +290,11 @@ def build_quantize_plan(
             continue
 
         if policy.selects(tensor):
+            if policy.strategy == "channel" and "moe.routed" in tensor.tags:
+                raise ValueError(
+                    f"Selected routed MoE tensor {tensor.name!r} cannot use "
+                    "channel strategy; vLLM WNA16 MoE supports group strategy only"
+                )
             proj_kind = _fused_expert_proj_kind(tensor)
             if _is_fused_moe_expert(tensor):
                 if moe_layout is None:
@@ -295,16 +309,28 @@ def build_quantize_plan(
             input_format = _input_format_for(tensor)
             if input_format is None:
                 raise ValueError(
-                    f"Selected tensor {tensor.name!r} cannot be quantized to INT4 "
+                    f"Selected tensor {tensor.name!r} cannot be quantized to "
+                    f"INT{policy.num_bits} "
                     f"(dtype={tensor.dtype}, storage_format={tensor.storage_format}, shape={tensor.shape})"
                 )
             logical_shape = tensor.effective_logical_shape
-            if len(logical_shape) != 2 or logical_shape[1] % policy.group_size:
+            if len(logical_shape) != 2:
+                raise ValueError(
+                    f"Selected tensor {tensor.name!r} has logical shape {logical_shape}; "
+                    "expected a 2D weight"
+                )
+            if (
+                policy.strategy == "group"
+                and (
+                    policy.group_size is None
+                    or logical_shape[1] % policy.group_size
+                )
+            ):
                 raise ValueError(
                     f"Selected tensor {tensor.name!r} has logical shape {logical_shape}; "
                     f"in_features must be divisible by group_size={policy.group_size}"
                 )
-            if logical_shape[1] % 8:
+            if policy.num_bits == 4 and logical_shape[1] % 8:
                 raise ValueError(
                     f"Selected tensor {tensor.name!r} has in_features="
                     f"{logical_shape[1]}; INT4 pack-quantized storage requires "
@@ -314,15 +340,21 @@ def build_quantize_plan(
                 tensor,
                 input_format=input_format,
                 output_format=FormatSpec(
-                    "compressed_tensors_int4_groupwise",
+                    (
+                        "compressed_tensors_int8_channelwise"
+                        if policy.strategy == "channel"
+                        else f"compressed_tensors_int{policy.num_bits}_groupwise"
+                    ),
                     {
                         "quantizer": policy.method,
+                        "num_bits": policy.num_bits,
+                        "strategy": policy.strategy,
                         "group_size": policy.group_size,
                         "n_candidates": policy.n_candidates,
                         "chunk_size": policy.chunk_size,
                     },
                 ),
-                rule_name="user_selected_int4",
+                rule_name=f"user_selected_int{policy.num_bits}",
             )
         else:
             _plan_unselected_weight(plan, tensor, policy.unselected)
@@ -336,7 +368,11 @@ def build_quantize_plan(
             action.tensor.name
             for action in plan.actions
             if action.output_format.name
-            == "compressed_tensors_int4_groupwise"
+            in {
+                "compressed_tensors_int4_groupwise",
+                "compressed_tensors_int8_groupwise",
+                "compressed_tensors_int8_channelwise",
+            }
         ),
     )
     _validate_fused_bank_closure(profile, selected_banks)

@@ -43,9 +43,11 @@ class QuantizationPolicy:
     include_names: tuple[str, ...] = ()
     exclude_names: tuple[str, ...] = ()
     method: str = "mse"
-    group_size: int = 32
+    num_bits: int = 4
+    strategy: str = "group"
+    group_size: int | None = None
     n_candidates: int = 200
-    chunk_size: int = 4096
+    chunk_size: int | None = None
     unselected: UnselectedWeightsPolicy = field(
         default_factory=UnselectedWeightsPolicy
     )
@@ -57,9 +59,36 @@ class QuantizationPolicy:
         if unknown:
             raise ValueError(f"Unknown selections: {', '.join(unknown)}")
         if self.method != "mse":
-            raise ValueError("Only the MSE INT4 quantizer is currently supported")
-        if self.group_size <= 0 or self.group_size % 2:
-            raise ValueError("INT4 group_size must be a positive even integer")
+            raise ValueError("Only the MSE integer quantizer is currently supported")
+        if self.num_bits not in (4, 8):
+            raise ValueError("num_bits must be 4 or 8")
+        if self.strategy not in {"group", "channel"}:
+            raise ValueError("strategy must be 'group' or 'channel'")
+        if self.strategy == "channel" and self.num_bits != 8:
+            raise ValueError("channel strategy is currently supported only for INT8")
+        if self.strategy == "channel" and self.group_size is not None:
+            raise ValueError("group_size must be omitted for channel strategy")
+        if self.strategy == "group" and self.group_size is None:
+            object.__setattr__(
+                self,
+                "group_size",
+                32 if self.num_bits == 4 else 128,
+            )
+        if self.chunk_size is None:
+            object.__setattr__(
+                self,
+                "chunk_size",
+                4096 if self.num_bits == 4 else 1024,
+            )
+        assert self.chunk_size is not None
+        if self.group_size is not None and self.group_size <= 0:
+            raise ValueError("group_size must be a positive integer")
+        if (
+            self.num_bits == 4
+            and self.group_size is not None
+            and self.group_size % 2
+        ):
+            raise ValueError("INT4 group_size must be an even integer")
         if self.n_candidates <= 0 or self.chunk_size <= 0:
             raise ValueError("n_candidates and chunk_size must be positive")
         for pattern in (*self.include_names, *self.exclude_names):

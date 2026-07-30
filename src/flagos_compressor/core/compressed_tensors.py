@@ -180,9 +180,21 @@ def build_compressed_tensors_config(
     all_logical_weights: Iterable[str],
     selected_logical_weights: Iterable[str],
     *,
-    group_size: int,
+    num_bits: int = 4,
+    strategy: str = "group",
+    group_size: int | None = None,
     ignore_modules: Iterable[str] = (),
 ) -> dict:
+    if num_bits not in (4, 8):
+        raise ValueError(f"num_bits must be 4 or 8, got {num_bits}")
+    if strategy not in {"group", "channel"}:
+        raise ValueError(f"Unsupported weight strategy: {strategy}")
+    if strategy == "channel" and num_bits != 8:
+        raise ValueError("channel strategy is currently supported only for INT8")
+    if strategy == "group" and (group_size is None or group_size <= 0):
+        raise ValueError("group strategy requires a positive group_size")
+    if strategy == "channel" and group_size is not None:
+        raise ValueError("channel strategy must not declare group_size")
     validate_fusion_closure(all_logical_weights, selected_logical_weights)
     targets = compile_compressed_tensors_targets(
         all_logical_weights, selected_logical_weights
@@ -197,21 +209,28 @@ def build_compressed_tensors_config(
     ignore = sorted(
         _prefix_agnostic_ignore(module) for module in set(ignore_modules)
     )
+    weights = {
+        "num_bits": num_bits,
+        "type": "int",
+        "strategy": strategy,
+        "symmetric": True,
+        "dynamic": False,
+    }
+    if strategy == "group":
+        weights["group_size"] = group_size
+    group_name = (
+        f"w{num_bits}a16_g{group_size}"
+        if strategy == "group"
+        else f"w{num_bits}a16_channel"
+    )
     return {
         "quant_method": "compressed-tensors",
         "format": "pack-quantized",
         "quantization_status": "compressed",
         "config_groups": {
-            f"w4a16_g{group_size}": {
+            group_name: {
                 "targets": targets,
-                "weights": {
-                    "num_bits": 4,
-                    "type": "int",
-                    "strategy": "group",
-                    "group_size": group_size,
-                    "symmetric": True,
-                    "dynamic": False,
-                },
+                "weights": weights,
             }
         },
         "ignore": ignore,
