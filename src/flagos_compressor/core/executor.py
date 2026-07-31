@@ -11,7 +11,10 @@ from flagos_compressor.core.moe_layout import ExpertProjection, layout_by_name
 from flagos_compressor.core.plan import ExecutionPlan, TensorAction
 from flagos_compressor.core.report import ConversionReport
 from flagos_compressor.formats.base import get_weight_format
-from flagos_compressor.formats.compressed_tensors import compressed_tensor_names
+from flagos_compressor.formats.compressed_tensors import (
+    compressed_tensor_names,
+    int_quantized_tensor_names,
+)
 from flagos_compressor.formats.compressed_tensors_moe import (
     fused_expert_bank_prefix,
 )
@@ -21,14 +24,20 @@ _LINEAR_FORMAT_BITS = {
     "compressed_tensors_int4_groupwise": 4,
     "compressed_tensors_int8_groupwise": 8,
     "compressed_tensors_int8_channelwise": 8,
+    "compressed_tensors_w8a8_int8": 8,
 }
 _FUSED_MOE_FORMAT_BITS = {
     "compressed_tensors_int4_moe_fused": 4,
     "compressed_tensors_int8_moe_fused": 8,
+    "compressed_tensors_w8a8_int8_moe_fused": 8,
 }
 _QUANTIZED_FORMAT_BITS = {
     **_LINEAR_FORMAT_BITS,
     **_FUSED_MOE_FORMAT_BITS,
+}
+_INT_QUANTIZED_FORMATS = {
+    "compressed_tensors_w8a8_int8",
+    "compressed_tensors_w8a8_int8_moe_fused",
 }
 
 
@@ -169,6 +178,7 @@ def _patch_compressed_tensors_config(
     schemes = {
         (
             _QUANTIZED_FORMAT_BITS[action.output_format.name],
+            int(action.output_format.params.get("activation_num_bits", 16)),
             action.output_format.params.get("strategy", "group"),
             (
                 int(action.output_format.params["group_size"])
@@ -181,14 +191,16 @@ def _patch_compressed_tensors_config(
     }
     if len(schemes) != 1:
         raise ValueError(
-            "A compressed-tensors config group requires one bit width and weight "
+            "A compressed-tensors config group requires one weight/activation "
+            "bit width and weight "
             f"strategy; found {sorted(schemes, key=str)}"
         )
-    num_bits, strategy, group_size = next(iter(schemes))
+    num_bits, activation_num_bits, strategy, group_size = next(iter(schemes))
     quantization_config = build_compressed_tensors_config(
         _logical_weight_names(plan),
         selected,
         num_bits=num_bits,
+        activation_num_bits=activation_num_bits,
         strategy=strategy,
         group_size=group_size,
         ignore_modules=_ignore_modules(plan),
@@ -211,7 +223,24 @@ def _write_quantization_manifest(
     tensors: dict[str, dict] = {}
     for action in plan.actions:
         tensor = action.tensor
-        if action.output_format.name in _LINEAR_FORMAT_BITS:
+        if action.output_format.name == "compressed_tensors_w8a8_int8":
+            logical_shape = tensor.effective_logical_shape
+            names = int_quantized_tensor_names(tensor.name)
+            tensors[names.weight] = {
+                "logical_name": tensor.name,
+                "format": "compressed-tensors-int-quantized-int8",
+                "input_format": action.input_format.name,
+                "storage_dtype": "int8",
+                "storage_shape": list(logical_shape),
+                "logical_shape": list(logical_shape),
+                "scale": names.scale,
+                "scale_shape": [logical_shape[0], 1],
+                "num_bits": 8,
+                "activation_num_bits": 8,
+                "strategy": "channel",
+                "rule": action.rule_name,
+            }
+        elif action.output_format.name in _LINEAR_FORMAT_BITS:
             num_bits = _LINEAR_FORMAT_BITS[action.output_format.name]
             logical_shape = tensor.effective_logical_shape
             strategy = action.output_format.params.get("strategy", "group")
@@ -244,6 +273,30 @@ def _write_quantization_manifest(
             }
             if group_size is not None:
                 tensors[names.weight]["group_size"] = int(group_size)
+        elif (
+            action.output_format.name
+            == "compressed_tensors_w8a8_int8_moe_fused"
+        ):
+            for prefix, proj in _fused_expert_projections(action):
+                logical_name = (
+                    f"{prefix}.{proj.expert_id}.{proj.proj_name}.weight"
+                )
+                names = int_quantized_tensor_names(logical_name)
+                tensors[names.weight] = {
+                    "logical_name": logical_name,
+                    "format": "compressed-tensors-int-quantized-int8",
+                    "input_format": action.input_format.name,
+                    "storage_dtype": "int8",
+                    "storage_shape": [proj.out_features, proj.in_features],
+                    "logical_shape": [proj.out_features, proj.in_features],
+                    "scale": names.scale,
+                    "scale_shape": [proj.out_features, 1],
+                    "num_bits": 8,
+                    "activation_num_bits": 8,
+                    "strategy": "channel",
+                    "rule": action.rule_name,
+                    "source_fused_bank": tensor.name,
+                }
         elif action.output_format.name in _FUSED_MOE_FORMAT_BITS:
             num_bits = _FUSED_MOE_FORMAT_BITS[action.output_format.name]
             group_size = int(action.output_format.params["group_size"])
@@ -318,26 +371,50 @@ def _write_quantization_manifest(
             f"{sorted(quantized_strategies)}"
         )
     strategy = next(iter(quantized_strategies))
+    compression_formats = {
+        (
+            "int-quantized"
+            if action.output_format.name in _INT_QUANTIZED_FORMATS
+            else "pack-quantized"
+        )
+        for action in plan.actions
+        if action.output_format.name in _QUANTIZED_FORMAT_BITS
+    }
+    if len(compression_formats) != 1:
+        raise ValueError(
+            "Expected one compressed-tensors storage format, found "
+            f"{sorted(compression_formats)}"
+        )
+    compression_format = next(iter(compression_formats))
+    is_int_quantized = compression_format == "int-quantized"
+    artifact = {
+        "format": "compressed-tensors",
+        "compression_format": compression_format,
+        "weight_encoding": (
+            "int8"
+            if is_int_quantized
+            else ("uint4b8" if num_bits == 4 else "uint8b128")
+        ),
+        "num_bits": num_bits,
+        "scale_dtype": "float32" if is_int_quantized else "bfloat16",
+        "scale_layout": (
+            "row_channel" if strategy == "channel" else "row_group"
+        ),
+        "strategy": strategy,
+    }
+    if not is_int_quantized:
+        artifact.update(
+            {
+                "pack_dtype": "int32",
+                "pack_axis": "input",
+                "values_per_word": 32 // num_bits,
+            }
+        )
     manifest = {
         "schema": "flagos-compressor.provenance.v1",
         "producer": {"name": "FlagOS-Compressor"},
         "algorithm": plan.metadata.get("algorithm", {}),
-        "artifact": {
-            "format": "compressed-tensors",
-            "compression_format": "pack-quantized",
-            "weight_encoding": (
-                "uint4b8" if num_bits == 4 else "uint8b128"
-            ),
-            "num_bits": num_bits,
-            "pack_dtype": "int32",
-            "pack_axis": "input",
-            "values_per_word": 32 // num_bits,
-            "scale_dtype": "bfloat16",
-            "scale_layout": (
-                "row_channel" if strategy == "channel" else "row_group"
-            ),
-            "strategy": strategy,
-        },
+        "artifact": artifact,
         "unselected_weights": plan.metadata.get("unselected_weights", {}),
         "runtime_config": {
             "quant_method": quantization_config["quant_method"],

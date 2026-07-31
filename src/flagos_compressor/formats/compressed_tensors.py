@@ -20,6 +20,12 @@ class CompressedTensorNames:
     shape: str
 
 
+@dataclass(frozen=True)
+class IntQuantizedTensorNames:
+    weight: str
+    scale: str
+
+
 def compressed_tensor_names(tensor_name: str) -> CompressedTensorNames:
     if not tensor_name.endswith(".weight"):
         raise ValueError(
@@ -31,6 +37,20 @@ def compressed_tensor_names(tensor_name: str) -> CompressedTensorNames:
         weight=f"{prefix}.weight_packed",
         scale=f"{prefix}.weight_scale",
         shape=f"{prefix}.weight_shape",
+    )
+
+
+def int_quantized_tensor_names(tensor_name: str) -> IntQuantizedTensorNames:
+    """Names used by compressed-tensors ``int-quantized`` checkpoints."""
+    if not tensor_name.endswith(".weight"):
+        raise ValueError(
+            "compressed-tensors int-quantized export requires a source tensor "
+            f"ending in '.weight', got {tensor_name!r}"
+        )
+    prefix = tensor_name[: -len(".weight")]
+    return IntQuantizedTensorNames(
+        weight=tensor_name,
+        scale=f"{prefix}.weight_scale",
     )
 
 
@@ -150,3 +170,52 @@ class CompressedTensorsInt8ChannelwiseFormat(
 
 
 register_weight_format(CompressedTensorsInt8ChannelwiseFormat())
+
+
+class CompressedTensorsW8A8Int8Format(WeightFormat):
+    """Canonical dynamic-token W8A8 ``int-quantized`` serialization."""
+
+    name = "compressed_tensors_w8a8_int8"
+
+    def from_canonical(
+        self,
+        tensor_name: str,
+        weight: torch.Tensor,
+        backend: QuantBackend,
+        context: BackendRunContext,
+        params: dict[str, Any],
+    ) -> ArtifactResult:
+        quantizer = params.get("quantizer", "mse")
+        if quantizer != "mse":
+            raise NotImplementedError(f"Unsupported INT8 quantizer: {quantizer}")
+        logical_shape = tuple(int(dim) for dim in weight.shape)
+        if len(logical_shape) != 2:
+            raise ValueError(
+                f"compressed-tensors W8A8 requires a 2D weight, got {logical_shape}"
+            )
+        if params.get("strategy", "channel") != "channel":
+            raise ValueError("compressed-tensors W8A8 requires channel weight strategy")
+
+        int8_values, scales = backend.run(
+            "mse_int8_quant",
+            weight,
+            group_size=logical_shape[1],
+            n_candidates=int(params.get("n_candidates", 200)),
+            chunk_size=int(params.get("chunk_size", 1024)),
+            scale_dtype=torch.float32,
+            context=context,
+        )
+        names = int_quantized_tensor_names(tensor_name)
+        return ArtifactResult(
+            tensors={
+                names.weight: int8_values.cpu(),
+                # vLLM's canonical W8A8 ABI allocates weight scales in FP32.
+                names.scale: scales.cpu(),
+            },
+            # The raw INT8 weight replaces the source tensor under the same
+            # name; only the scale is newly generated.
+            generated_tensor_names=(names.scale,),
+        )
+
+
+register_weight_format(CompressedTensorsW8A8Int8Format())

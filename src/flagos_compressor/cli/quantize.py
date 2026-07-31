@@ -48,16 +48,24 @@ def run(args) -> None:
     ensure_no_unmatched(plan)
     num_bits = policy.num_bits
     linear_format = (
-        "compressed_tensors_int8_channelwise"
-        if policy.strategy == "channel"
-        else f"compressed_tensors_int{num_bits}_groupwise"
+        "compressed_tensors_w8a8_int8"
+        if policy.is_w8a8
+        else (
+            "compressed_tensors_int8_channelwise"
+            if policy.strategy == "channel"
+            else f"compressed_tensors_int{num_bits}_groupwise"
+        )
     )
     quantized_count = plan.output_format_counts.get(
         linear_format,
         0,
     )
     fused_moe_count = plan.output_format_counts.get(
-        f"compressed_tensors_int{num_bits}_moe_fused",
+        (
+            "compressed_tensors_w8a8_int8_moe_fused"
+            if policy.is_w8a8
+            else f"compressed_tensors_int{num_bits}_moe_fused"
+        ),
         0,
     )
     if quantized_count == 0 and fused_moe_count == 0:
@@ -74,8 +82,18 @@ def run(args) -> None:
     report = execute_plan(args.input, args.output, plan, backend)
     logger.info("Done.")
     logger.info("Strategy: %s", policy.strategy)
-    logger.info("INT%d tensors: %d", num_bits, quantized_count)
-    logger.info("INT%d fused MoE banks: %d", num_bits, fused_moe_count)
+    logger.info(
+        "W%dA%d tensors: %d",
+        num_bits,
+        policy.activation_num_bits,
+        quantized_count,
+    )
+    logger.info(
+        "W%dA%d fused MoE banks: %d",
+        num_bits,
+        policy.activation_num_bits,
+        fused_moe_count,
+    )
     logger.info("Converted tensors: %d", report.converted)
     logger.info("Kept tensors: %d", report.kept)
     logger.info("Manifest: %s/quantization_manifest.json", args.output)

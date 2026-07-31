@@ -108,3 +108,48 @@ def test_builds_w8a16_channel_config_without_group_size():
         "symmetric": True,
         "dynamic": False,
     }
+
+
+def test_builds_dynamic_token_w8a8_int_quantized_config():
+    weights = {
+        "model.layers.0.self_attn.o_proj.weight",
+        "model.layers.0.mlp.experts.0.gate_proj.weight",
+        "model.layers.0.mlp.experts.0.up_proj.weight",
+        "model.layers.0.mlp.experts.0.down_proj.weight",
+    }
+    config = build_compressed_tensors_config(
+        weights,
+        weights,
+        num_bits=8,
+        activation_num_bits=8,
+        strategy="channel",
+    )
+    assert config["format"] == "int-quantized"
+    group = config["config_groups"]["w8a8_channel"]
+    assert group["weights"] == {
+        "num_bits": 8,
+        "type": "int",
+        "strategy": "channel",
+        "symmetric": True,
+        "dynamic": False,
+    }
+    assert group["input_activations"] == {
+        "num_bits": 8,
+        "type": "int",
+        "strategy": "token",
+        "symmetric": True,
+        "dynamic": True,
+    }
+
+
+def test_w8a8_config_rejects_group_weights():
+    weights = {"model.layers.0.self_attn.o_proj.weight"}
+    with pytest.raises(ValueError, match="channel"):
+        build_compressed_tensors_config(
+            weights,
+            weights,
+            num_bits=8,
+            activation_num_bits=8,
+            strategy="group",
+            group_size=128,
+        )

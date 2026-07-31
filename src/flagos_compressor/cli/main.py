@@ -39,6 +39,16 @@ def build_parser() -> argparse.ArgumentParser:
     quantize.add_argument("--exclude-name", action="append", metavar="REGEX")
     quantize.add_argument("--bits", type=int, choices=[4, 8], default=None)
     quantize.add_argument(
+        "--activation-bits",
+        type=int,
+        choices=[8, 16],
+        default=None,
+        help=(
+            "Activation bit width. Use 8 with --bits 8 --strategy channel "
+            "for dynamic per-token W8A8; defaults to 16."
+        ),
+    )
+    quantize.add_argument(
         "--strategy",
         choices=["group", "channel"],
         default=None,

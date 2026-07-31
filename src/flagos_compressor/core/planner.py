@@ -134,15 +134,19 @@ def _plan_fused_moe_expert(
 
     Each expert is quantized as an independent 2D ``[out, in]`` weight. The
     per-expert ``(out, in)`` is derived from the model's :class:`MoeLayout`
-    (axis order is model specific). ``in`` must be divisible by the group size;
-    INT4 additionally requires divisibility by eight for the existing nibble
-    packer. A fused ``gate_up_proj`` must have an even split dimension.
+    (axis order is model specific). W4A16/W8A16 use groupwise packed weights;
+    W8A8 uses raw INT8 weights with per-output-channel scales. A fused
+    ``gate_up_proj`` must have an even split dimension.
     """
     shape = tensor.effective_logical_shape
-    if policy.strategy != "group" or policy.group_size is None:
+    if policy.strategy == "channel" and not policy.is_w8a8:
         raise ValueError(
-            "Fused routed MoE weights require group quantization with a "
-            "group_size; vLLM WNA16 MoE does not support channel strategy"
+            "Fused routed MoE channel quantization requires W8A8; "
+            "set activation_num_bits=8 (CLI: --activation-bits 8)"
+        )
+    if policy.strategy == "group" and policy.group_size is None:
+        raise ValueError(
+            "Fused routed MoE group quantization requires a group_size"
         )
     if len(shape) != 3:
         raise ValueError(
@@ -155,7 +159,11 @@ def _plan_fused_moe_expert(
             f"Selected fused expert {tensor.name!r} has an odd fused output "
             "dimension; cannot split into gate and up projections"
         )
-    if in_features % policy.group_size:
+    if (
+        policy.strategy == "group"
+        and policy.group_size is not None
+        and in_features % policy.group_size
+    ):
         raise ValueError(
             f"Selected fused expert {tensor.name!r} has in_features={in_features}; "
             f"must be divisible by group_size={policy.group_size}"
@@ -169,10 +177,15 @@ def _plan_fused_moe_expert(
         tensor,
         input_format=FormatSpec("bf16"),
         output_format=FormatSpec(
-            f"compressed_tensors_int{policy.num_bits}_moe_fused",
+            (
+                "compressed_tensors_w8a8_int8_moe_fused"
+                if policy.is_w8a8
+                else f"compressed_tensors_int{policy.num_bits}_moe_fused"
+            ),
             {
                 "quantizer": policy.method,
                 "num_bits": policy.num_bits,
+                "activation_num_bits": policy.activation_num_bits,
                 "strategy": policy.strategy,
                 "group_size": policy.group_size,
                 "n_candidates": policy.n_candidates,
@@ -277,6 +290,7 @@ def build_quantize_plan(
                     else policy.method
                 ),
                 "num_bits": policy.num_bits,
+                "activation_num_bits": policy.activation_num_bits,
                 "strategy": policy.strategy,
                 "group_size": policy.group_size,
                 "n_candidates": policy.n_candidates,
@@ -290,10 +304,15 @@ def build_quantize_plan(
             continue
 
         if policy.selects(tensor):
-            if policy.strategy == "channel" and "moe.routed" in tensor.tags:
+            if (
+                policy.strategy == "channel"
+                and "moe.routed" in tensor.tags
+                and not policy.is_w8a8
+            ):
                 raise ValueError(
                     f"Selected routed MoE tensor {tensor.name!r} cannot use "
-                    "channel strategy; vLLM WNA16 MoE supports group strategy only"
+                    "channel strategy in W8A16; vLLM WNA16 MoE requires group "
+                    "strategy. Use --activation-bits 8 for W8A8"
                 )
             proj_kind = _fused_expert_proj_kind(tensor)
             if _is_fused_moe_expert(tensor):
@@ -341,13 +360,18 @@ def build_quantize_plan(
                 input_format=input_format,
                 output_format=FormatSpec(
                     (
-                        "compressed_tensors_int8_channelwise"
-                        if policy.strategy == "channel"
-                        else f"compressed_tensors_int{policy.num_bits}_groupwise"
+                        "compressed_tensors_w8a8_int8"
+                        if policy.is_w8a8
+                        else (
+                            "compressed_tensors_int8_channelwise"
+                            if policy.strategy == "channel"
+                            else f"compressed_tensors_int{policy.num_bits}_groupwise"
+                        )
                     ),
                     {
                         "quantizer": policy.method,
                         "num_bits": policy.num_bits,
+                        "activation_num_bits": policy.activation_num_bits,
                         "strategy": policy.strategy,
                         "group_size": policy.group_size,
                         "n_candidates": policy.n_candidates,
@@ -372,6 +396,7 @@ def build_quantize_plan(
                 "compressed_tensors_int4_groupwise",
                 "compressed_tensors_int8_groupwise",
                 "compressed_tensors_int8_channelwise",
+                "compressed_tensors_w8a8_int8",
             }
         ),
     )

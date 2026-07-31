@@ -52,6 +52,26 @@ def validate_artifact(model_path: str | Path) -> dict:
     int8_tensors = 0
     observed_quant_bits: set[int] = set()
     observed_strategies: set[str] = set()
+    quantized_formats = {
+        "compressed-tensors-pack-quantized-int4": (
+            4,
+            torch.int32,
+            torch.bfloat16,
+            True,
+        ),
+        "compressed-tensors-pack-quantized-int8": (
+            8,
+            torch.int32,
+            torch.bfloat16,
+            True,
+        ),
+        "compressed-tensors-int-quantized-int8": (
+            8,
+            torch.int8,
+            torch.float32,
+            False,
+        ),
+    }
     if manifest_path.exists():
         with manifest_path.open("r", encoding="utf-8") as f:
             manifest = json.load(f)
@@ -63,12 +83,11 @@ def validate_artifact(model_path: str | Path) -> dict:
             if name not in tensor_meta:
                 errors.append(f"Manifest weight is missing: {name}")
                 continue
-            if tensor_format not in {
-                "compressed-tensors-pack-quantized-int4",
-                "compressed-tensors-pack-quantized-int8",
-            }:
+            if tensor_format not in quantized_formats:
                 continue
-            num_bits = 4 if tensor_format.endswith("int4") else 8
+            num_bits, expected_weight_dtype, expected_scale_dtype, requires_shape = (
+                quantized_formats[tensor_format]
+            )
             observed_quant_bits.add(num_bits)
             observed_strategies.add(spec.get("strategy", "group"))
             if spec.get("num_bits", num_bits) != num_bits:
@@ -82,10 +101,10 @@ def validate_artifact(model_path: str | Path) -> dict:
                 int8_tensors += 1
             weight_shape, weight_dtype = tensor_meta[name]
             scale_name = spec.get("scale")
-            if weight_dtype != torch.int32:
+            if weight_dtype != expected_weight_dtype:
                 errors.append(
                     f"INT{num_bits} weight {name} is {weight_dtype}, "
-                    f"expected {torch.int32}"
+                    f"expected {expected_weight_dtype}"
                 )
             if list(weight_shape) != spec.get("storage_shape"):
                 errors.append(f"INT{num_bits} storage shape mismatch for {name}")
@@ -95,41 +114,44 @@ def validate_artifact(model_path: str | Path) -> dict:
                 )
             else:
                 scale_shape, scale_dtype = tensor_meta[scale_name]
-                if scale_dtype != torch.bfloat16:
+                if scale_dtype != expected_scale_dtype:
                     errors.append(
                         f"INT{num_bits} scale {scale_name} is {scale_dtype}, "
-                        "expected bfloat16"
+                        f"expected {expected_scale_dtype}"
                     )
                 if list(scale_shape) != spec.get("scale_shape"):
                     errors.append(
                         f"INT{num_bits} scale shape mismatch for {name}"
                     )
-            shape_name = spec.get("shape")
-            if shape_name not in tensor_meta:
-                errors.append(
-                    f"INT{num_bits} logical shape tensor is missing: {shape_name}"
-                )
-            else:
-                shape_shape, shape_dtype = tensor_meta[shape_name]
-                if shape_shape != (2,) or shape_dtype != torch.int64:
+            if requires_shape:
+                shape_name = spec.get("shape")
+                if shape_name not in tensor_meta:
                     errors.append(
-                        f"INT{num_bits} logical shape tensor {shape_name} "
-                        "must be int64[2]"
+                        f"INT{num_bits} logical shape tensor is missing: {shape_name}"
                     )
-                elif logical_shape_values.get(shape_name) != spec.get(
-                    "logical_shape"
-                ):
-                    errors.append(
-                        f"INT{num_bits} logical shape tensor {shape_name} "
-                        "has the wrong value"
-                    )
+                else:
+                    shape_shape, shape_dtype = tensor_meta[shape_name]
+                    if shape_shape != (2,) or shape_dtype != torch.int64:
+                        errors.append(
+                            f"INT{num_bits} logical shape tensor {shape_name} "
+                            "must be int64[2]"
+                        )
+                    elif logical_shape_values.get(shape_name) != spec.get(
+                        "logical_shape"
+                    ):
+                        errors.append(
+                            f"INT{num_bits} logical shape tensor {shape_name} "
+                            "has the wrong value"
+                        )
 
         config_path = path / "config.json"
         artifact = manifest.get("artifact") or {}
         if len(observed_quant_bits) == 1:
             manifest_bits = next(iter(observed_quant_bits))
             expected_encoding = (
-                "uint4b8" if manifest_bits == 4 else "uint8b128"
+                "int8"
+                if artifact.get("compression_format") == "int-quantized"
+                else ("uint4b8" if manifest_bits == 4 else "uint8b128")
             )
             if (
                 "num_bits" in artifact
@@ -152,11 +174,32 @@ def validate_artifact(model_path: str | Path) -> dict:
             quant_config = config.get("quantization_config") or {}
             if quant_config.get("quant_method") != "compressed-tensors":
                 errors.append("config.json does not declare compressed-tensors")
-            if quant_config.get("format") != "pack-quantized":
-                errors.append("config.json does not declare pack-quantized format")
+            expected_compression_format = artifact.get(
+                "compression_format", "pack-quantized"
+            )
+            if quant_config.get("format") != expected_compression_format:
+                errors.append(
+                    "config.json compressed-tensors format does not match "
+                    "the manifest"
+                )
+            config_groups = quant_config.get("config_groups") or {}
+            if expected_compression_format == "int-quantized":
+                for group_name, group in config_groups.items():
+                    input_quant = group.get("input_activations") or {}
+                    if input_quant != {
+                        "num_bits": 8,
+                        "type": "int",
+                        "strategy": "token",
+                        "symmetric": True,
+                        "dynamic": True,
+                    }:
+                        errors.append(
+                            f"config group {group_name} does not declare "
+                            "dynamic-token INT8 activations"
+                        )
             config_bits = {
                 group.get("weights", {}).get("num_bits")
-                for group in (quant_config.get("config_groups") or {}).values()
+                for group in config_groups.values()
             }
             config_bits.discard(None)
             if observed_quant_bits and config_bits != observed_quant_bits:
@@ -165,7 +208,7 @@ def validate_artifact(model_path: str | Path) -> dict:
                 )
             config_strategies = {
                 group.get("weights", {}).get("strategy")
-                for group in (quant_config.get("config_groups") or {}).values()
+                for group in config_groups.values()
             }
             config_strategies.discard(None)
             if (

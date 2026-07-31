@@ -11,14 +11,16 @@ def mse_int8_quantize(
     group_size: int = 128,
     n_candidates: int = 200,
     chunk_size: int = 1024,
+    scale_dtype: torch.dtype = torch.bfloat16,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Quantize a 2D float weight to signed INT8 values and BF16 group scales."""
+    """Quantize a 2D float weight to signed INT8 values and group scales."""
     return mse_int_quantize(
         weight,
         num_bits=8,
         group_size=group_size,
         n_candidates=n_candidates,
         chunk_size=chunk_size,
+        scale_dtype=scale_dtype,
     )
 
 

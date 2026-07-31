@@ -181,12 +181,17 @@ def build_compressed_tensors_config(
     selected_logical_weights: Iterable[str],
     *,
     num_bits: int = 4,
+    activation_num_bits: int = 16,
     strategy: str = "group",
     group_size: int | None = None,
     ignore_modules: Iterable[str] = (),
 ) -> dict:
     if num_bits not in (4, 8):
         raise ValueError(f"num_bits must be 4 or 8, got {num_bits}")
+    if activation_num_bits not in (8, 16):
+        raise ValueError(
+            f"activation_num_bits must be 8 or 16, got {activation_num_bits}"
+        )
     if strategy not in {"group", "channel"}:
         raise ValueError(f"Unsupported weight strategy: {strategy}")
     if strategy == "channel" and num_bits != 8:
@@ -195,6 +200,10 @@ def build_compressed_tensors_config(
         raise ValueError("group strategy requires a positive group_size")
     if strategy == "channel" and group_size is not None:
         raise ValueError("channel strategy must not declare group_size")
+    if activation_num_bits == 8 and (num_bits != 8 or strategy != "channel"):
+        raise ValueError(
+            "W8A8 requires 8-bit weights with channel weight strategy"
+        )
     validate_fusion_closure(all_logical_weights, selected_logical_weights)
     targets = compile_compressed_tensors_targets(
         all_logical_weights, selected_logical_weights
@@ -219,19 +228,36 @@ def build_compressed_tensors_config(
     if strategy == "group":
         weights["group_size"] = group_size
     group_name = (
-        f"w{num_bits}a16_g{group_size}"
-        if strategy == "group"
-        else f"w{num_bits}a16_channel"
+        "w8a8_channel"
+        if activation_num_bits == 8
+        else (
+            f"w{num_bits}a16_g{group_size}"
+            if strategy == "group"
+            else f"w{num_bits}a16_channel"
+        )
     )
+    group = {
+        "targets": targets,
+        "weights": weights,
+    }
+    if activation_num_bits == 8:
+        group["input_activations"] = {
+            "num_bits": 8,
+            "type": "int",
+            "strategy": "token",
+            "symmetric": True,
+            "dynamic": True,
+        }
     return {
         "quant_method": "compressed-tensors",
-        "format": "pack-quantized",
+        "format": (
+            "int-quantized"
+            if activation_num_bits == 8
+            else "pack-quantized"
+        ),
         "quantization_status": "compressed",
         "config_groups": {
-            group_name: {
-                "targets": targets,
-                "weights": weights,
-            }
+            group_name: group,
         },
         "ignore": ignore,
     }

@@ -44,6 +44,7 @@ class QuantizationPolicy:
     exclude_names: tuple[str, ...] = ()
     method: str = "mse"
     num_bits: int = 4
+    activation_num_bits: int = 16
     strategy: str = "group"
     group_size: int | None = None
     n_candidates: int = 200
@@ -62,8 +63,16 @@ class QuantizationPolicy:
             raise ValueError("Only the MSE integer quantizer is currently supported")
         if self.num_bits not in (4, 8):
             raise ValueError("num_bits must be 4 or 8")
+        if self.activation_num_bits not in (8, 16):
+            raise ValueError("activation_num_bits must be 8 or 16")
         if self.strategy not in {"group", "channel"}:
             raise ValueError("strategy must be 'group' or 'channel'")
+        if self.activation_num_bits == 8 and (
+            self.num_bits != 8 or self.strategy != "channel"
+        ):
+            raise ValueError(
+                "W8A8 requires 8-bit weights with channel strategy"
+            )
         if self.strategy == "channel" and self.num_bits != 8:
             raise ValueError("channel strategy is currently supported only for INT8")
         if self.strategy == "channel" and self.group_size is not None:
@@ -93,6 +102,10 @@ class QuantizationPolicy:
             raise ValueError("n_candidates and chunk_size must be positive")
         for pattern in (*self.include_names, *self.exclude_names):
             re.compile(pattern)
+
+    @property
+    def is_w8a8(self) -> bool:
+        return self.num_bits == 8 and self.activation_num_bits == 8
 
     def selects(self, tensor: TensorInfo) -> bool:
         if tensor.role != "weight":
