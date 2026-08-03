@@ -48,7 +48,7 @@ def run(args) -> None:
     ensure_no_unmatched(plan)
     num_bits = policy.num_bits
     linear_format = (
-        "compressed_tensors_w8a8_int8"
+        "compressed_tensors_w8a8_channelwise"
         if policy.is_w8a8
         else (
             "compressed_tensors_int8_channelwise"
@@ -62,7 +62,7 @@ def run(args) -> None:
     )
     fused_moe_count = plan.output_format_counts.get(
         (
-            "compressed_tensors_w8a8_int8_moe_fused"
+            "compressed_tensors_w8a8_channelwise_moe_fused"
             if policy.is_w8a8
             else f"compressed_tensors_int{num_bits}_moe_fused"
         ),

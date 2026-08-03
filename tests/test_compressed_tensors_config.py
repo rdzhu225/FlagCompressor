@@ -125,7 +125,7 @@ def test_builds_dynamic_token_w8a8_int_quantized_config():
         strategy="channel",
     )
     assert config["format"] == "int-quantized"
-    group = config["config_groups"]["w8a8_channel"]
+    group = config["config_groups"]["w8a8_channel_token"]
     assert group["weights"] == {
         "num_bits": 8,
         "type": "int",

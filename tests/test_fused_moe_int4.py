@@ -122,7 +122,7 @@ def test_planner_selects_fused_banks_as_w8a8():
         LAYOUT,
     )
     assert plan.output_format_counts == {
-        "compressed_tensors_w8a8_int8_moe_fused": 2
+        "compressed_tensors_w8a8_channelwise_moe_fused": 2
     }
     assert not plan.kept_tensors
 
@@ -279,7 +279,7 @@ def test_fused_w8a8_format_writes_per_expert_raw_int8():
     bank = torch.randn(2, 16, 64, dtype=torch.bfloat16)
     backend = build_backend("cpu", None)
     ctx = BackendRunContext(report=ConversionReport(backend="cpu"))
-    fmt = get_weight_format("compressed_tensors_w8a8_int8_moe_fused")
+    fmt = get_weight_format("compressed_tensors_w8a8_channelwise_moe_fused")
     res = fmt.from_canonical(
         "m.mlp.experts.gate_up_proj",
         bank,
@@ -419,8 +419,8 @@ def test_full_w8a8_moe_end_to_end(tmp_path):
         LAYOUT,
     )
     assert plan.output_format_counts == {
-        "compressed_tensors_w8a8_int8": 1,
-        "compressed_tensors_w8a8_int8_moe_fused": 2,
+        "compressed_tensors_w8a8_channelwise": 1,
+        "compressed_tensors_w8a8_channelwise_moe_fused": 2,
     }
 
     execute_plan(source, output, plan, build_backend("cpu", None))
@@ -428,7 +428,7 @@ def test_full_w8a8_moe_end_to_end(tmp_path):
     config = json.loads((output / "config.json").read_text())
     qc = config["quantization_config"]
     assert qc["format"] == "int-quantized"
-    scheme = qc["config_groups"]["w8a8_channel"]
+    scheme = qc["config_groups"]["w8a8_channel_token"]
     assert scheme["weights"]["strategy"] == "channel"
     assert scheme["input_activations"]["strategy"] == "token"
     assert scheme["input_activations"]["dynamic"] is True

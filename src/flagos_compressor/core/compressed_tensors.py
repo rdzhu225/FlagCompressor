@@ -228,7 +228,7 @@ def build_compressed_tensors_config(
     if strategy == "group":
         weights["group_size"] = group_size
     group_name = (
-        "w8a8_channel"
+        "w8a8_channel_token"
         if activation_num_bits == 8
         else (
             f"w{num_bits}a16_g{group_size}"

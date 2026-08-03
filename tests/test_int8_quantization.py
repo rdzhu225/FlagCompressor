@@ -88,7 +88,7 @@ def test_w8a8_format_writes_raw_int8_and_fp32_channel_scales():
     context = BackendRunContext(
         report=ConversionReport(backend="cpu"),
     )
-    result = get_weight_format("compressed_tensors_w8a8_int8").from_canonical(
+    result = get_weight_format("compressed_tensors_w8a8_channelwise").from_canonical(
         "model.proj.weight",
         weight,
         backend,

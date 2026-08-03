@@ -178,7 +178,7 @@ def _plan_fused_moe_expert(
         input_format=FormatSpec("bf16"),
         output_format=FormatSpec(
             (
-                "compressed_tensors_w8a8_int8_moe_fused"
+                "compressed_tensors_w8a8_channelwise_moe_fused"
                 if policy.is_w8a8
                 else f"compressed_tensors_int{policy.num_bits}_moe_fused"
             ),
@@ -360,7 +360,7 @@ def build_quantize_plan(
                 input_format=input_format,
                 output_format=FormatSpec(
                     (
-                        "compressed_tensors_w8a8_int8"
+                        "compressed_tensors_w8a8_channelwise"
                         if policy.is_w8a8
                         else (
                             "compressed_tensors_int8_channelwise"
@@ -396,7 +396,7 @@ def build_quantize_plan(
                 "compressed_tensors_int4_groupwise",
                 "compressed_tensors_int8_groupwise",
                 "compressed_tensors_int8_channelwise",
-                "compressed_tensors_w8a8_int8",
+                "compressed_tensors_w8a8_channelwise",
             }
         ),
     )

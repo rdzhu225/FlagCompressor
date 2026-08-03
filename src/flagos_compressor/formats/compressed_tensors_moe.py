@@ -142,7 +142,7 @@ class CompressedTensorsInt8MoEFusedFormat(_CompressedTensorsIntMoEFusedFormat):
     num_bits = 8
 
 
-class CompressedTensorsW8A8Int8MoEFusedFormat(WeightFormat):
+class CompressedTensorsW8A8ChannelwiseMoEFusedFormat(WeightFormat):
     """Canonical W8A8 export of a fused 3D routed-expert bank.
 
     The source bank is expanded to the per-expert Linear names consumed by
@@ -150,7 +150,7 @@ class CompressedTensorsW8A8Int8MoEFusedFormat(WeightFormat):
     INT8 with an FP32 ``[out_features, 1]`` channel scale.
     """
 
-    name = "compressed_tensors_w8a8_int8_moe_fused"
+    name = "compressed_tensors_w8a8_channelwise_moe_fused"
 
     def from_canonical(
         self,
@@ -210,4 +210,4 @@ class CompressedTensorsW8A8Int8MoEFusedFormat(WeightFormat):
 
 register_weight_format(CompressedTensorsInt4MoEFusedFormat())
 register_weight_format(CompressedTensorsInt8MoEFusedFormat())
-register_weight_format(CompressedTensorsW8A8Int8MoEFusedFormat())
+register_weight_format(CompressedTensorsW8A8ChannelwiseMoEFusedFormat())

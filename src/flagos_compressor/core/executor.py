@@ -24,20 +24,20 @@ _LINEAR_FORMAT_BITS = {
     "compressed_tensors_int4_groupwise": 4,
     "compressed_tensors_int8_groupwise": 8,
     "compressed_tensors_int8_channelwise": 8,
-    "compressed_tensors_w8a8_int8": 8,
+    "compressed_tensors_w8a8_channelwise": 8,
 }
 _FUSED_MOE_FORMAT_BITS = {
     "compressed_tensors_int4_moe_fused": 4,
     "compressed_tensors_int8_moe_fused": 8,
-    "compressed_tensors_w8a8_int8_moe_fused": 8,
+    "compressed_tensors_w8a8_channelwise_moe_fused": 8,
 }
 _QUANTIZED_FORMAT_BITS = {
     **_LINEAR_FORMAT_BITS,
     **_FUSED_MOE_FORMAT_BITS,
 }
 _INT_QUANTIZED_FORMATS = {
-    "compressed_tensors_w8a8_int8",
-    "compressed_tensors_w8a8_int8_moe_fused",
+    "compressed_tensors_w8a8_channelwise",
+    "compressed_tensors_w8a8_channelwise_moe_fused",
 }
 
 
@@ -223,7 +223,7 @@ def _write_quantization_manifest(
     tensors: dict[str, dict] = {}
     for action in plan.actions:
         tensor = action.tensor
-        if action.output_format.name == "compressed_tensors_w8a8_int8":
+        if action.output_format.name == "compressed_tensors_w8a8_channelwise":
             logical_shape = tensor.effective_logical_shape
             names = int_quantized_tensor_names(tensor.name)
             tensors[names.weight] = {
@@ -275,7 +275,7 @@ def _write_quantization_manifest(
                 tensors[names.weight]["group_size"] = int(group_size)
         elif (
             action.output_format.name
-            == "compressed_tensors_w8a8_int8_moe_fused"
+            == "compressed_tensors_w8a8_channelwise_moe_fused"
         ):
             for prefix, proj in _fused_expert_projections(action):
                 logical_name = (

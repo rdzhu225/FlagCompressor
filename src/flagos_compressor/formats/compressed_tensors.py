@@ -172,10 +172,10 @@ class CompressedTensorsInt8ChannelwiseFormat(
 register_weight_format(CompressedTensorsInt8ChannelwiseFormat())
 
 
-class CompressedTensorsW8A8Int8Format(WeightFormat):
-    """Canonical dynamic-token W8A8 ``int-quantized`` serialization."""
+class CompressedTensorsW8A8ChannelwiseFormat(WeightFormat):
+    """Per-output-channel weights with dynamic per-token W8A8 activations."""
 
-    name = "compressed_tensors_w8a8_int8"
+    name = "compressed_tensors_w8a8_channelwise"
 
     def from_canonical(
         self,
@@ -218,4 +218,4 @@ class CompressedTensorsW8A8Int8Format(WeightFormat):
         )
 
 
-register_weight_format(CompressedTensorsW8A8Int8Format())
+register_weight_format(CompressedTensorsW8A8ChannelwiseFormat())
