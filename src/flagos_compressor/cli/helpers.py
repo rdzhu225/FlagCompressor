@@ -12,7 +12,8 @@ def print_plan(plan: ExecutionPlan) -> None:
     algorithm = plan.metadata.get("algorithm") or {}
     if algorithm:
         detail = (
-            f"INT{algorithm.get('num_bits')} "
+            f"W{algorithm.get('num_bits')}A"
+            f"{algorithm.get('activation_num_bits', 16)} "
             f"{algorithm.get('strategy')} "
             f"{algorithm.get('name')}"
         )
@@ -53,6 +54,7 @@ def load_quantize_recipe(path: str | Path) -> dict:
     allowed = {
         "version",
         "bits",
+        "activation_bits",
         "strategy",
         "method",
         "group_size",
@@ -121,6 +123,7 @@ def build_quantization_policy(args) -> QuantizationPolicy:
         return cli_value if cli_value is not None else recipe.get(name, default)
 
     num_bits = int(value("bits", 4))
+    activation_num_bits = int(value("activation_bits", 16))
     strategy = value("strategy", "group")
     requested_group_size = value("group_size", None)
     if strategy == "group" and requested_group_size is None:
@@ -133,6 +136,7 @@ def build_quantization_policy(args) -> QuantizationPolicy:
         exclude_names=exclude_names,
         method=value("method", "mse"),
         num_bits=num_bits,
+        activation_num_bits=activation_num_bits,
         strategy=strategy,
         group_size=(
             int(requested_group_size)

@@ -104,3 +104,42 @@ def test_int8_channel_rejects_explicit_group_size():
     )
     with pytest.raises(ValueError, match="group_size must be omitted"):
         build_quantization_policy(args)
+
+
+def test_w8a8_cli_builds_dynamic_token_policy():
+    args = Namespace(
+        recipe=None,
+        select=["moe.routed"],
+        exclude=None,
+        select_name=None,
+        exclude_name=None,
+        bits=8,
+        activation_bits=8,
+        strategy="channel",
+        method=None,
+        group_size=None,
+        n_candidates=None,
+        chunk_size=None,
+    )
+    policy = build_quantization_policy(args)
+    assert policy.is_w8a8
+    assert policy.group_size is None
+
+
+def test_activation_int8_requires_channel_w8():
+    args = Namespace(
+        recipe=None,
+        select=["attention"],
+        exclude=None,
+        select_name=None,
+        exclude_name=None,
+        bits=8,
+        activation_bits=8,
+        strategy="group",
+        method=None,
+        group_size=None,
+        n_candidates=None,
+        chunk_size=None,
+    )
+    with pytest.raises(ValueError, match="W8A8 requires"):
+        build_quantization_policy(args)

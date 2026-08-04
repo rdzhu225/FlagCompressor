@@ -10,8 +10,9 @@ def mse_int_quantize(
     group_size: int,
     n_candidates: int = 200,
     chunk_size: int = 4096,
+    scale_dtype: torch.dtype = torch.bfloat16,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Quantize a 2D float weight to signed integers and BF16 group scales."""
+    """Quantize a 2D float weight to signed integers and group scales."""
     if weight.dim() != 2:
         raise ValueError(f"Expected a 2D weight tensor, got {weight.dim()}D")
     if num_bits not in (4, 8):
@@ -76,5 +77,5 @@ def mse_int_quantize(
 
     return (
         quantized.reshape(out_features, in_features),
-        best_scales.reshape(out_features, num_groups).to(torch.bfloat16),
+        best_scales.reshape(out_features, num_groups).to(scale_dtype),
     )

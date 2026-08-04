@@ -75,11 +75,30 @@ flagos-compressor quantize \
   --backend cuda
 ```
 
-Do not pass `--group-size` with `--strategy channel`. Channelwise export stores
-scales as `[out_features, 1]` and declares `strategy: channel` in the
-compressed-tensors config. vLLM's WNA16 routed-MoE path currently requires
-group quantization, so channel strategy is supported for ordinary Linear and
+Do not pass `--group-size` with `--strategy channel`. Channelwise W8A16 export
+stores scales as `[out_features, 1]` and declares `strategy: channel` in the
+compressed-tensors config. vLLM's WNA16 routed-MoE path requires group
+quantization, so W8A16 channel strategy is supported for ordinary Linear and
 shared-expert Linear weights, but rejected for routed experts.
+
+Dynamic per-token W8A8, including routed MoE experts:
+
+```bash
+flagos-compressor quantize \
+  --input /path/to/qwen3.5-moe \
+  --output /path/to/qwen3.5-moe-w8a8 \
+  --select linear \
+  --bits 8 \
+  --activation-bits 8 \
+  --strategy channel \
+  --backend cuda
+```
+
+W8A8 uses compressed-tensors `int-quantized` storage: raw signed INT8 weights,
+FP32 per-output-channel scales, and dynamic symmetric per-token INT8
+activations. Fused routed-expert banks are expanded to the standard
+`experts.<id>.<projection>.weight` and `weight_scale` names consumed by vLLM.
+W8A8 requires `--bits 8 --strategy channel`; `--group-size` is not accepted.
 
 Selections can be combined:
 
@@ -98,9 +117,9 @@ A YAML recipe is also supported:
 ```yaml
 version: 1
 bits: 8
-strategy: group
+activation_bits: 8
+strategy: channel
 method: mse
-group_size: 128
 unselected:
   strategy: convert
   format: bf16
@@ -116,9 +135,12 @@ Recipe fields:
 - `version` (int): recipe schema version. Currently `1`; any other value is rejected.
 - `bits` (int, default `4`): weight bit width, either `4` or `8`. Same as CLI
   `--bits`.
+- `activation_bits` (int, default `16`): activation bit width, either `8` or
+  `16`. Setting it to `8` enables dynamic-token W8A8 and requires `bits: 8`
+  with `strategy: channel`. Same as CLI `--activation-bits`.
 - `strategy` (str, default `group`): `group` or `channel`. Channel strategy is
-  currently available for INT8 Linear weights and must not specify
-  `group_size`.
+  available for INT8 Linear weights and for routed experts in W8A8 mode. It
+  must not specify `group_size`.
 - `method` (str, default `mse`): quantizer method. Only `mse` is currently accepted.
 - `group_size` (int, default `32` for INT4 and `128` for INT8): group size
   along the input-feature axis for weight scales. Same as CLI `--group-size`.
@@ -139,7 +161,8 @@ Recipe fields:
 
 CLI flags and recipe fields are additive: `select` / `exclude` entries from the
 recipe are merged with the corresponding CLI flags, and scalar fields
-(`bits`, `strategy`, `method`, `group_size`, `n_candidates`, `chunk_size`)
+(`bits`, `activation_bits`, `strategy`, `method`, `group_size`,
+`n_candidates`, `chunk_size`)
 take the CLI value when provided, otherwise fall back to the recipe, otherwise
 to the bit-width-specific default. At least one selector (via CLI or recipe)
 is required.
@@ -167,4 +190,6 @@ and runtime quantization config.
 - Weight-only symmetric groupwise MSE INT4.
 - Weight-only symmetric groupwise MSE INT8.
 - Weight-only symmetric per-channel MSE INT8 for non-routed Linear weights.
+- Dynamic-token W8A8 with symmetric per-channel INT8 weights for Linear and
+  supported fused routed-MoE weights.
 - CPU and CUDA torch execution.

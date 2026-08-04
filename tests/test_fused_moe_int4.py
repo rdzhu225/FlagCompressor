@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 import torch
-from safetensors.torch import save_file
+from safetensors.torch import load_file, save_file
 
 import flagos_compressor.formats.register  # noqa: F401
 import flagos_compressor.quantizers.register  # noqa: F401
@@ -107,6 +107,23 @@ def test_planner_selects_fused_banks_as_moe_int8():
         LAYOUT,
     )
     assert plan.output_format_counts == {"compressed_tensors_int8_moe_fused": 2}
+    assert not plan.kept_tensors
+
+
+def test_planner_selects_fused_banks_as_w8a8():
+    plan = build_quantize_plan(
+        _profile(),
+        QuantizationPolicy(
+            selections=("moe.routed",),
+            num_bits=8,
+            activation_num_bits=8,
+            strategy="channel",
+        ),
+        LAYOUT,
+    )
+    assert plan.output_format_counts == {
+        "compressed_tensors_w8a8_channelwise_moe_fused": 2
+    }
     assert not plan.kept_tensors
 
 
@@ -257,6 +274,40 @@ def test_fused_int8_format_roundtrip_shape_and_values():
     assert ((dequantized - original).norm() / original.norm()).item() < 0.02
 
 
+def test_fused_w8a8_format_writes_per_expert_raw_int8():
+    torch.manual_seed(4)
+    bank = torch.randn(2, 16, 64, dtype=torch.bfloat16)
+    backend = build_backend("cpu", None)
+    ctx = BackendRunContext(report=ConversionReport(backend="cpu"))
+    fmt = get_weight_format("compressed_tensors_w8a8_channelwise_moe_fused")
+    res = fmt.from_canonical(
+        "m.mlp.experts.gate_up_proj",
+        bank,
+        backend,
+        ctx,
+        {
+            "quantizer": "mse",
+            "strategy": "channel",
+            "n_candidates": 20,
+            "chunk_size": 16,
+            "proj_kind": "gate_up_proj",
+            "layout": LAYOUT.name,
+            "num_experts": 2,
+        },
+    )
+    assert len(res.tensors) == 2 * 2 * 2
+    base = "m.mlp.experts.0.gate_proj"
+    quantized = res.tensors[base + ".weight"]
+    scale = res.tensors[base + ".weight_scale"]
+    assert quantized.dtype == torch.int8
+    assert quantized.shape == (8, 64)
+    assert scale.dtype == torch.float32
+    assert scale.shape == (8, 1)
+    reconstructed = quantized.float() * scale
+    original = bank[0, :8, :].float()
+    assert ((reconstructed - original).norm() / original.norm()).item() < 0.02
+
+
 # --------------------------------------------------------------------------
 # End-to-end + artifact re-scan
 # --------------------------------------------------------------------------
@@ -348,6 +399,66 @@ def test_fused_artifact_is_recognized_on_rescan(tmp_path):
         # The manifest gives every packed tensor a concrete int4 provenance,
         # so it is not silently misread (e.g. as an unknown/None format).
         assert info.storage_format is not None
+
+
+def test_full_w8a8_moe_end_to_end(tmp_path):
+    source = tmp_path / "source"
+    output = tmp_path / "quantized-w8a8"
+    _make_fused_checkpoint(source)
+    profile = scan_hf_safetensors(source)
+    plan = build_quantize_plan(
+        profile,
+        QuantizationPolicy(
+            selections=("linear",),
+            num_bits=8,
+            activation_num_bits=8,
+            strategy="channel",
+            n_candidates=8,
+            chunk_size=16,
+        ),
+        LAYOUT,
+    )
+    assert plan.output_format_counts == {
+        "compressed_tensors_w8a8_channelwise": 1,
+        "compressed_tensors_w8a8_channelwise_moe_fused": 2,
+    }
+
+    execute_plan(source, output, plan, build_backend("cpu", None))
+
+    config = json.loads((output / "config.json").read_text())
+    qc = config["quantization_config"]
+    assert qc["format"] == "int-quantized"
+    scheme = qc["config_groups"]["w8a8_channel_token"]
+    assert scheme["weights"]["strategy"] == "channel"
+    assert scheme["input_activations"]["strategy"] == "token"
+    assert scheme["input_activations"]["dynamic"] is True
+
+    shard = load_file(output / "model-00001-of-00001.safetensors")
+    attention = "model.layers.0.self_attn.o_proj"
+    expert = "model.layers.0.mlp.experts.0.gate_proj"
+    assert shard[attention + ".weight"].dtype == torch.int8
+    assert shard[attention + ".weight_scale"].dtype == torch.float32
+    assert shard[expert + ".weight"].dtype == torch.int8
+    assert shard[expert + ".weight_scale"].dtype == torch.float32
+    assert "model.layers.0.mlp.experts.gate_up_proj" not in shard
+    assert shard["model.layers.0.mlp.gate.weight"].dtype == torch.bfloat16
+
+    result = validate_artifact(output)
+    assert result["valid"], result["errors"]
+    assert result["int8_tensors"] == 13
+
+    manifest = json.loads(
+        (output / "quantization_manifest.json").read_text()
+    )
+    assert manifest["artifact"]["compression_format"] == "int-quantized"
+    assert manifest["artifact"]["weight_encoding"] == "int8"
+    assert "pack_dtype" not in manifest["artifact"]
+
+    rescan = scan_hf_safetensors(output)
+    assert (
+        rescan.tensors[expert + ".weight"].storage_format
+        == "compressed-tensors-int-quantized-int8"
+    )
 
 
 def test_partial_selection_via_selector_is_rejected_end_to_end(tmp_path):
