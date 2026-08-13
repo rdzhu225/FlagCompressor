@@ -1,0 +1,21 @@
+version: 2
+method: gptq
+format: gptq
+bits: 4
+strategy: group
+group_size: 128
+select:
+  - linear
+calibration:
+  data: /path/to/calibration.jsonl
+  samples: 128
+  sequence_length: 512
+  seed: 42
+  text_column: text
+gptq:
+  block_size: 128
+  damp_percent: 0.01
+  desc_act: true
+  static_groups: false
+  true_sequential: true
+  symmetric: true

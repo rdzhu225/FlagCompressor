@@ -6,6 +6,8 @@ ATTENTION_LINEAR_NAMES = {
     "value", "dense", "c_attn", "c_proj", "qkv_proj", "query_key_value",
     "wq", "wk", "wv", "wo", "wq_a", "wq_b", "wkv_a", "wkv_b",
     "kv_a_proj_with_mqa", "kv_b_proj", "q_a_proj", "q_b_proj",
+    "in_proj_qkv", "in_proj_qkvz", "in_proj_ba", "in_proj_z", "in_proj_b",
+    "in_proj_a",
 }
 
 MLP_LINEAR_NAMES = {

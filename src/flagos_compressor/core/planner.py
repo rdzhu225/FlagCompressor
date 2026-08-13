@@ -186,6 +186,9 @@ def _plan_fused_moe_expert(
                 "quantizer": policy.method,
                 "num_bits": policy.num_bits,
                 "activation_num_bits": policy.activation_num_bits,
+                "scale_dtype": (
+                    policy.scale_dtype if policy.is_w8a8 else "bfloat16"
+                ),
                 "strategy": policy.strategy,
                 "group_size": policy.group_size,
                 "n_candidates": policy.n_candidates,
@@ -291,6 +294,9 @@ def build_quantize_plan(
                 ),
                 "num_bits": policy.num_bits,
                 "activation_num_bits": policy.activation_num_bits,
+                "scale_dtype": (
+                    policy.scale_dtype if policy.is_w8a8 else "bfloat16"
+                ),
                 "strategy": policy.strategy,
                 "group_size": policy.group_size,
                 "n_candidates": policy.n_candidates,
@@ -372,6 +378,11 @@ def build_quantize_plan(
                         "quantizer": policy.method,
                         "num_bits": policy.num_bits,
                         "activation_num_bits": policy.activation_num_bits,
+                        "scale_dtype": (
+                            policy.scale_dtype
+                            if policy.is_w8a8
+                            else "bfloat16"
+                        ),
                         "strategy": policy.strategy,
                         "group_size": policy.group_size,
                         "n_candidates": policy.n_candidates,

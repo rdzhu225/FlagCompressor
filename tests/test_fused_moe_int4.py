@@ -308,6 +308,34 @@ def test_fused_w8a8_format_writes_per_expert_raw_int8():
     assert ((reconstructed - original).norm() / original.norm()).item() < 0.02
 
 
+def test_fused_w8a8_format_supports_bf16_scales():
+    bank = torch.randn(2, 16, 64, dtype=torch.bfloat16)
+    backend = build_backend("cpu", None)
+    ctx = BackendRunContext(report=ConversionReport(backend="cpu"))
+    res = get_weight_format(
+        "compressed_tensors_w8a8_channelwise_moe_fused"
+    ).from_canonical(
+        "m.mlp.experts.gate_up_proj",
+        bank,
+        backend,
+        ctx,
+        {
+            "quantizer": "mse",
+            "strategy": "channel",
+            "scale_dtype": "bf16",
+            "n_candidates": 8,
+            "chunk_size": 16,
+            "proj_kind": "gate_up_proj",
+            "layout": LAYOUT.name,
+            "num_experts": 2,
+        },
+    )
+
+    assert res.tensors[
+        "m.mlp.experts.0.gate_proj.weight_scale"
+    ].dtype == torch.bfloat16
+
+
 # --------------------------------------------------------------------------
 # End-to-end + artifact re-scan
 # --------------------------------------------------------------------------
@@ -413,6 +441,7 @@ def test_full_w8a8_moe_end_to_end(tmp_path):
             num_bits=8,
             activation_num_bits=8,
             strategy="channel",
+            scale_dtype="bf16",
             n_candidates=8,
             chunk_size=16,
         ),
@@ -437,9 +466,9 @@ def test_full_w8a8_moe_end_to_end(tmp_path):
     attention = "model.layers.0.self_attn.o_proj"
     expert = "model.layers.0.mlp.experts.0.gate_proj"
     assert shard[attention + ".weight"].dtype == torch.int8
-    assert shard[attention + ".weight_scale"].dtype == torch.float32
+    assert shard[attention + ".weight_scale"].dtype == torch.bfloat16
     assert shard[expert + ".weight"].dtype == torch.int8
-    assert shard[expert + ".weight_scale"].dtype == torch.float32
+    assert shard[expert + ".weight_scale"].dtype == torch.bfloat16
     assert "model.layers.0.mlp.experts.gate_up_proj" not in shard
     assert shard["model.layers.0.mlp.gate.weight"].dtype == torch.bfloat16
 
@@ -452,6 +481,7 @@ def test_full_w8a8_moe_end_to_end(tmp_path):
     )
     assert manifest["artifact"]["compression_format"] == "int-quantized"
     assert manifest["artifact"]["weight_encoding"] == "int8"
+    assert manifest["artifact"]["scale_dtype"] == "bfloat16"
     assert "pack_dtype" not in manifest["artifact"]
 
     rescan = scan_hf_safetensors(output)

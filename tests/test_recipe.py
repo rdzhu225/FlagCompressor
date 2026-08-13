@@ -1,4 +1,5 @@
 from argparse import Namespace
+from pathlib import Path
 
 import pytest
 
@@ -115,6 +116,7 @@ def test_w8a8_cli_builds_dynamic_token_policy():
         exclude_name=None,
         bits=8,
         activation_bits=8,
+        scale_dtype="bf16",
         strategy="channel",
         method=None,
         group_size=None,
@@ -123,7 +125,44 @@ def test_w8a8_cli_builds_dynamic_token_policy():
     )
     policy = build_quantization_policy(args)
     assert policy.is_w8a8
+    assert policy.scale_dtype == "bfloat16"
     assert policy.group_size is None
+
+
+def test_w8a8_recipe_supports_bf16_scale_dtype(tmp_path):
+    recipe = tmp_path / "w8a8.yaml"
+    recipe.write_text(
+        """
+version: 1
+bits: 8
+activation_bits: 8
+strategy: channel
+scale_dtype: bf16
+select:
+  - attention
+""",
+        encoding="utf-8",
+    )
+    args = Namespace(
+        recipe=str(recipe),
+        select=None,
+        exclude=None,
+        select_name=None,
+        exclude_name=None,
+        bits=None,
+        activation_bits=None,
+        scale_dtype=None,
+        strategy=None,
+        method=None,
+        group_size=None,
+        n_candidates=None,
+        chunk_size=None,
+    )
+
+    policy = build_quantization_policy(args)
+
+    assert policy.is_w8a8
+    assert policy.scale_dtype == "bfloat16"
 
 
 def test_activation_int8_requires_channel_w8():
@@ -143,3 +182,28 @@ def test_activation_int8_requires_channel_w8():
     )
     with pytest.raises(ValueError, match="W8A8 requires"):
         build_quantization_policy(args)
+
+
+@pytest.mark.parametrize("method", ["gptq", "awq"])
+def test_calibrated_example_recipes_build_native_policies(method):
+    args = Namespace(
+        recipe=str(Path("examples/recipes") / f"{method}.yaml"),
+        select=None,
+        exclude=None,
+        select_name=None,
+        exclude_name=None,
+        method=None,
+        bits=None,
+        strategy=None,
+        group_size=None,
+        n_candidates=None,
+        chunk_size=None,
+    )
+
+    policy = build_quantization_policy(args)
+
+    assert policy.method == method
+    assert policy.format == method
+    assert policy.group_size == 128
+    assert policy.calibration.samples == 128
+    assert policy.calibration.sequence_length == 512

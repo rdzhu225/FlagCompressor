@@ -5,6 +5,10 @@ from pathlib import Path
 
 import torch
 
+from flagos_compressor.core.dtypes import (
+    dtype_name,
+    parse_w8a8_scale_dtype,
+)
 from flagos_compressor.io.hf_checkpoint import HfSafetensorsCheckpoint
 
 
@@ -52,6 +56,9 @@ def validate_artifact(model_path: str | Path) -> dict:
     int8_tensors = 0
     observed_quant_bits: set[int] = set()
     observed_strategies: set[str] = set()
+    observed_scale_dtypes: set[str] = set()
+    native_method: str | None = None
+    native_quantized_tensors = 0
     quantized_formats = {
         "compressed-tensors-pack-quantized-int4": (
             4,
@@ -65,12 +72,7 @@ def validate_artifact(model_path: str | Path) -> dict:
             torch.bfloat16,
             True,
         ),
-        "compressed-tensors-int-quantized-int8": (
-            8,
-            torch.int8,
-            torch.float32,
-            False,
-        ),
+        "compressed-tensors-int-quantized-int8": (8, torch.int8, None, False),
     }
     if manifest_path.exists():
         with manifest_path.open("r", encoding="utf-8") as f:
@@ -88,6 +90,14 @@ def validate_artifact(model_path: str | Path) -> dict:
             num_bits, expected_weight_dtype, expected_scale_dtype, requires_shape = (
                 quantized_formats[tensor_format]
             )
+            if expected_scale_dtype is None:
+                try:
+                    expected_scale_dtype = parse_w8a8_scale_dtype(
+                        spec.get("scale_dtype", "float32")
+                    )
+                except (TypeError, ValueError) as exc:
+                    errors.append(f"Invalid scale dtype for {name}: {exc}")
+                    expected_scale_dtype = torch.float32
             observed_quant_bits.add(num_bits)
             observed_strategies.add(spec.get("strategy", "group"))
             if spec.get("num_bits", num_bits) != num_bits:
@@ -114,6 +124,7 @@ def validate_artifact(model_path: str | Path) -> dict:
                 )
             else:
                 scale_shape, scale_dtype = tensor_meta[scale_name]
+                observed_scale_dtypes.add(dtype_name(scale_dtype) or "unknown")
                 if scale_dtype != expected_scale_dtype:
                     errors.append(
                         f"INT{num_bits} scale {scale_name} is {scale_dtype}, "
@@ -166,6 +177,21 @@ def validate_artifact(model_path: str | Path) -> dict:
             and artifact.get("strategy") != next(iter(observed_strategies))
         ):
             errors.append("Manifest artifact weight strategy is inconsistent")
+        if "scale_dtype" in artifact:
+            try:
+                artifact_scale_dtype = dtype_name(
+                    parse_w8a8_scale_dtype(artifact["scale_dtype"])
+                )
+            except (TypeError, ValueError) as exc:
+                errors.append(f"Invalid artifact scale dtype: {exc}")
+            else:
+                if (
+                    len(observed_scale_dtypes) == 1
+                    and artifact_scale_dtype != next(iter(observed_scale_dtypes))
+                ):
+                    errors.append(
+                        "Manifest artifact scale dtype is inconsistent"
+                    )
         if not config_path.exists():
             errors.append("compressed-tensors artifact is missing config.json")
         else:
@@ -219,6 +245,97 @@ def validate_artifact(model_path: str | Path) -> dict:
                     "config.json weight strategies do not match the manifest"
                 )
 
+    config_path = path / "config.json"
+    if not manifest_path.exists() and config_path.exists():
+        with config_path.open("r", encoding="utf-8") as f:
+            config = json.load(f)
+        quant_config = config.get("quantization_config") or {}
+        candidate_method = str(quant_config.get("quant_method", "")).lower()
+        if candidate_method in {"gptq", "awq"}:
+            native_method = candidate_method
+            bits = int(quant_config.get("bits", 0))
+            group_size = int(quant_config.get("group_size", 0))
+            if bits not in ({4, 8} if candidate_method == "gptq" else {4}):
+                errors.append(
+                    f"Unsupported native {candidate_method.upper()} bit width: {bits}"
+                )
+            if group_size <= 0:
+                errors.append(
+                    f"Native {candidate_method.upper()} group_size must be positive"
+                )
+            pack_factor = 32 // bits if bits in {4, 8} else 0
+            qweights = sorted(name for name in tensor_meta if name.endswith(".qweight"))
+            native_quantized_tensors = len(qweights)
+            if bits == 4:
+                int4_tensors += native_quantized_tensors
+            elif bits == 8:
+                int8_tensors += native_quantized_tensors
+            if not qweights:
+                errors.append(
+                    f"Native {candidate_method.upper()} config has no qweight tensors"
+                )
+            for qweight_name in qweights:
+                prefix = qweight_name[: -len(".qweight")]
+                if f"{prefix}.weight" in tensor_meta:
+                    errors.append(
+                        f"Native quantized module {prefix} also stores a float weight"
+                    )
+                qweight_shape, qweight_dtype = tensor_meta[qweight_name]
+                if qweight_dtype != torch.int32 or len(qweight_shape) != 2:
+                    errors.append(
+                        f"{qweight_name} must be a 2D int32 tensor"
+                    )
+                    continue
+                required = [f"{prefix}.qzeros", f"{prefix}.scales"]
+                if candidate_method == "gptq":
+                    required.append(f"{prefix}.g_idx")
+                missing = [name for name in required if name not in tensor_meta]
+                if missing:
+                    errors.append(
+                        f"Native {candidate_method.upper()} tensors missing for "
+                        f"{prefix}: {missing}"
+                    )
+                    continue
+                qzeros_shape, qzeros_dtype = tensor_meta[f"{prefix}.qzeros"]
+                scales_shape, scales_dtype = tensor_meta[f"{prefix}.scales"]
+                if qzeros_dtype != torch.int32 or len(qzeros_shape) != 2:
+                    errors.append(f"{prefix}.qzeros must be a 2D int32 tensor")
+                if scales_dtype not in {torch.float16, torch.bfloat16, torch.float32}:
+                    errors.append(f"{prefix}.scales has unsupported dtype {scales_dtype}")
+                if candidate_method == "awq" and scales_dtype != torch.float16:
+                    errors.append(f"{prefix}.scales must be float16 for AutoAWQ GEMM")
+                if len(scales_shape) != 2 or qzeros_shape[0] != scales_shape[0]:
+                    errors.append(f"{prefix} scale/zero group dimensions do not match")
+                if pack_factor:
+                    if candidate_method == "gptq":
+                        in_features = qweight_shape[0] * pack_factor
+                        out_features = qweight_shape[1]
+                    else:
+                        in_features = qweight_shape[0]
+                        out_features = qweight_shape[1] * pack_factor
+                    if group_size > 0 and in_features % group_size:
+                        errors.append(
+                            f"{prefix} in_features={in_features} is not divisible "
+                            f"by group_size={group_size}"
+                        )
+                    expected_groups = in_features // max(group_size, 1)
+                    if scales_shape != (expected_groups, out_features):
+                        errors.append(
+                            f"{prefix}.scales has shape {scales_shape}, expected "
+                            f"{(expected_groups, out_features)}"
+                        )
+                    if qzeros_shape != (expected_groups, out_features // pack_factor):
+                        errors.append(
+                            f"{prefix}.qzeros has shape {qzeros_shape}, expected "
+                            f"{(expected_groups, out_features // pack_factor)}"
+                        )
+                    if candidate_method == "gptq":
+                        g_idx_shape, g_idx_dtype = tensor_meta[f"{prefix}.g_idx"]
+                        if g_idx_shape != (in_features,) or g_idx_dtype != torch.int32:
+                            errors.append(
+                                f"{prefix}.g_idx must be int32[{in_features}]"
+                            )
+
     return {
         "valid": not errors,
         "errors": errors,
@@ -228,4 +345,6 @@ def validate_artifact(model_path: str | Path) -> dict:
         "int4_tensors": int4_tensors,
         "int8_tensors": int8_tensors,
         "has_manifest": manifest_path.exists(),
+        "native_method": native_method,
+        "native_quantized_tensors": native_quantized_tensors,
     }

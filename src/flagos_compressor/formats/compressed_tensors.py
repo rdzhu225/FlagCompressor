@@ -6,6 +6,7 @@ from typing import Any
 import torch
 
 from flagos_compressor.backends.base import BackendRunContext, QuantBackend
+from flagos_compressor.core.dtypes import parse_w8a8_scale_dtype
 from flagos_compressor.formats.base import (
     ArtifactResult,
     WeightFormat,
@@ -202,14 +203,15 @@ class CompressedTensorsW8A8ChannelwiseFormat(WeightFormat):
             group_size=logical_shape[1],
             n_candidates=int(params.get("n_candidates", 200)),
             chunk_size=int(params.get("chunk_size", 1024)),
-            scale_dtype=torch.float32,
+            scale_dtype=parse_w8a8_scale_dtype(
+                params.get("scale_dtype", "float32")
+            ),
             context=context,
         )
         names = int_quantized_tensor_names(tensor_name)
         return ArtifactResult(
             tensors={
                 names.weight: int8_values.cpu(),
-                # vLLM's canonical W8A8 ABI allocates weight scales in FP32.
                 names.scale: scales.cpu(),
             },
             # The raw INT8 weight replaces the source tensor under the same

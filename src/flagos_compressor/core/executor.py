@@ -235,6 +235,9 @@ def _write_quantization_manifest(
                 "logical_shape": list(logical_shape),
                 "scale": names.scale,
                 "scale_shape": [logical_shape[0], 1],
+                "scale_dtype": action.output_format.params.get(
+                    "scale_dtype", "float32"
+                ),
                 "num_bits": 8,
                 "activation_num_bits": 8,
                 "strategy": "channel",
@@ -291,6 +294,9 @@ def _write_quantization_manifest(
                     "logical_shape": [proj.out_features, proj.in_features],
                     "scale": names.scale,
                     "scale_shape": [proj.out_features, 1],
+                    "scale_dtype": action.output_format.params.get(
+                        "scale_dtype", "float32"
+                    ),
                     "num_bits": 8,
                     "activation_num_bits": 8,
                     "strategy": "channel",
@@ -387,6 +393,16 @@ def _write_quantization_manifest(
         )
     compression_format = next(iter(compression_formats))
     is_int_quantized = compression_format == "int-quantized"
+    scale_dtypes = {
+        action.output_format.params.get("scale_dtype", "float32")
+        for action in plan.actions
+        if action.output_format.name in _INT_QUANTIZED_FORMATS
+    }
+    if is_int_quantized and len(scale_dtypes) != 1:
+        raise ValueError(
+            "Expected one W8A8 scale dtype, found "
+            f"{sorted(scale_dtypes)}"
+        )
     artifact = {
         "format": "compressed-tensors",
         "compression_format": compression_format,
@@ -396,7 +412,9 @@ def _write_quantization_manifest(
             else ("uint4b8" if num_bits == 4 else "uint8b128")
         ),
         "num_bits": num_bits,
-        "scale_dtype": "float32" if is_int_quantized else "bfloat16",
+        "scale_dtype": (
+            next(iter(scale_dtypes)) if is_int_quantized else "bfloat16"
+        ),
         "scale_layout": (
             "row_channel" if strategy == "channel" else "row_group"
         ),
