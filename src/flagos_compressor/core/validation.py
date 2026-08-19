@@ -58,6 +58,7 @@ def validate_artifact(model_path: str | Path) -> dict:
     observed_strategies: set[str] = set()
     observed_scale_dtypes: set[str] = set()
     native_method: str | None = None
+    native_algorithm: str | None = None
     native_quantized_tensors = 0
     quantized_formats = {
         "compressed-tensors-pack-quantized-int4": (
@@ -253,6 +254,9 @@ def validate_artifact(model_path: str | Path) -> dict:
         candidate_method = str(quant_config.get("quant_method", "")).lower()
         if candidate_method in {"gptq", "awq"}:
             native_method = candidate_method
+            native_algorithm = str(
+                quant_config.get("algorithm", candidate_method)
+            ).lower()
             bits = int(quant_config.get("bits", 0))
             group_size = int(quant_config.get("group_size", 0))
             if bits not in ({4, 8} if candidate_method == "gptq" else {4}):
@@ -346,5 +350,6 @@ def validate_artifact(model_path: str | Path) -> dict:
         "int8_tensors": int8_tensors,
         "has_manifest": manifest_path.exists(),
         "native_method": native_method,
+        "native_algorithm": native_algorithm,
         "native_quantized_tensors": native_quantized_tensors,
     }

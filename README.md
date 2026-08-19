@@ -10,6 +10,10 @@ quantized, while other low-precision weights are converted to BF16.
 pip install -e .
 ```
 
+The official AutoRound package is not required for native quantization. Install
+`pip install -e '.[official-autoround]'` only when running the optional official
+reference implementation or parity checks.
+
 ## Inspect
 
 ```bash
@@ -142,7 +146,52 @@ asymmetric zero points, and native GEMM packing order. The result has
 `qweight/qzeros/scales` tensors and an AWQ quantization config. Native AWQ is
 currently W4A16 GEMM with zero points.
 
-Both calibrated methods execute the original Transformers model definition and
+### AutoRound (native PyTorch)
+
+```bash
+flagos-compressor quantize \
+  --input /path/to/model \
+  --output /path/to/model-autoround \
+  --select linear \
+  --method autoround \
+  --bits 4 \
+  --group-size 128 \
+  --calibration-data /path/to/calibration.jsonl \
+  --autoround-iters 200 \
+  --backend npu
+```
+
+AutoRound is implemented natively with PyTorch and does not depend on the
+official `auto-round` package. It supports symmetric group-wise W4A16 and
+W8A16, learnable rounding offsets, optional min/max tuning, quantized-input
+cascading, and single-device execution. Device extensions such as `torch_npu`,
+`torch_mlu`, or `torch_musa` are imported only when their backend is selected.
+The output uses the established GPTQ tensor ABI for broad loader compatibility,
+while config provenance records `algorithm: autoround`; algorithm and packing
+are separate internally.
+
+An official AutoRound `config.json` can be imported without installing the
+official package:
+
+```bash
+flagos-compressor quantize \
+  --input /path/to/model \
+  --output /path/to/model-autoround \
+  --select linear \
+  --autoround-config /path/to/official/config.json \
+  --calibration-data /path/to/calibration.jsonl \
+  --backend npu
+```
+
+The bridge recognizes the current public fields such as `scheme`, `bits`,
+`group_size`, `iters`, `nsamples`, `seqlen`, and the official historical
+spelling `enable_quanted_input`. CLI and recipe values take precedence over
+imported values. Exported GPTQ metadata retains official AutoRound-compatible
+field names while identifying FlagOS-Compressor as the provider. The optional
+official Python entry point is lazy-loaded only for explicit reference/parity
+work; normal installation and native execution do not import it.
+
+All calibrated methods execute the original Transformers model definition and
 discover decoder blocks through Transformers' no-split contract; they do not
 maintain a per-model forward adapter. Transformers-v5 fused expert modules are
 temporarily exposed as ordinary per-expert `nn.Linear` modules, so the same
@@ -201,9 +250,10 @@ Recipe fields:
 - `strategy` (str, default `group`): `group` or `channel`. Channel strategy is
   available for INT8 Linear weights and for routed experts in W8A8 mode. It
   must not specify `group_size`.
-- `method` (str, default `mse`): `mse`, `gptq`, or `awq`.
+- `method` (str, default `mse`): `mse`, `gptq`, `awq`, or `autoround`.
 - `format` (str): output checkpoint ABI. It is inferred as
   `compressed-tensors`, `gptq`, or `awq` from `method` and must agree when set.
+  AutoRound currently uses `gptq` packing.
 - `group_size` (int, default `32` for INT4 and `128` for INT8): group size
   along the input-feature axis for weight scales. Same as CLI `--group-size`.
 - `n_candidates` (int, default `200`): number of candidate scales searched per
@@ -216,6 +266,10 @@ Recipe fields:
   `true_sequential`, and `symmetric`.
 - `awq` (mapping): `zero_point`, `version`, `duo_scaling`, `apply_clip`,
   `n_grid`, and `max_chunk_memory`.
+- `autoround` (mapping): `iters`, `lr`, `minmax_lr`, `batch_size`,
+  `gradient_accumulate_steps`, `momentum`, `enable_minmax_tuning`, and
+  `enable_quantized_input`. `official_config` may point to an official
+  AutoRound JSON config whose values are used as lower-priority defaults.
 - `select` (list): tensors to quantize. Each entry is either a built-in group
   name (`moe`, `moe.routed`, `moe.shared`, `attention`, `mlp`, `linear`) or a
   mapping `{name: 'REGEX'}`. Mirrors `--select` / `--select-name`.

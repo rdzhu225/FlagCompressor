@@ -8,9 +8,13 @@ from flagos_compressor.calibration.runner import NativeQuantizedLayer
 from flagos_compressor.calibration.moe import LinearExperts2D
 from flagos_compressor.core.validation import validate_artifact
 from flagos_compressor.formats.native_quantized import save_native_quantized_model
+from flagos_compressor.integrations.autoround import (
+    official_autoround_export_config,
+)
 from flagos_compressor.packing.autoawq import pack_autoawq_gemm
 from flagos_compressor.packing.autogptq import pack_autogptq
 from flagos_compressor.quantizers.awq import pseudo_quantize_awq
+from flagos_compressor.core.policy import AutoRoundPolicy, QuantizationPolicy
 
 
 class _ToyModel(torch.nn.Module):
@@ -144,3 +148,53 @@ def test_native_awq_export_skips_unselected_fused_moe_unit(tmp_path):
     config = json.loads((output / "config.json").read_text(encoding="utf-8"))
     assert "experts" in config["quantization_config"]["modules_to_not_convert"]
     assert validate_artifact(output)["valid"]
+
+
+def test_autoround_exports_loader_compatible_gptq_with_provenance(tmp_path):
+    model = _ToyModel().eval()
+    source = _source_checkpoint(tmp_path, model)
+    scales = torch.full((8, 1), 0.05)
+    zeros = torch.full((8, 1), 8.0)
+    codes = torch.clamp(torch.round(model.proj.weight / scales) + zeros, 0, 15)
+    fake = scales * (codes - zeros)
+    model.proj.weight.data.copy_(fake)
+    packed = pack_autogptq(
+        fake,
+        scales,
+        zeros,
+        torch.zeros(8, dtype=torch.int32),
+        bits=4,
+    )
+    output = tmp_path / "autoround"
+    policy = QuantizationPolicy(
+        selections=("linear",),
+        method="autoround",
+        group_size=8,
+        autoround=AutoRoundPolicy(iters=17, batch_size=2),
+    )
+
+    save_native_quantized_model(
+        source,
+        output,
+        model,
+        {"proj": NativeQuantizedLayer("autoround", packed, packing="gptq")},
+        method="autoround",
+        bits=4,
+        group_size=8,
+        autoround_config=official_autoround_export_config(policy),
+    )
+
+    config = json.loads((output / "config.json").read_text(encoding="utf-8"))
+    quant_config = config["quantization_config"]
+    assert quant_config["quant_method"] == "gptq"
+    assert quant_config["checkpoint_format"] == "gptq"
+    assert quant_config["algorithm"] == "autoround"
+    assert quant_config["provider"] == "flagos-compressor"
+    assert quant_config["iters"] == 17
+    assert quant_config["batch_size"] == 2
+    assert quant_config["enable_quanted_input"] is True
+    assert (output / "quantize_config.json").exists()
+    result = validate_artifact(output)
+    assert result["valid"], result["errors"]
+    assert result["native_method"] == "gptq"
+    assert result["native_algorithm"] == "autoround"

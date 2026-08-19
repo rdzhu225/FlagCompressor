@@ -1,4 +1,4 @@
-"""Write AutoGPTQ- and AutoAWQ-compatible safetensors checkpoints."""
+"""Write GPTQ- and AWQ-compatible native safetensors checkpoints."""
 
 from __future__ import annotations
 
@@ -58,6 +58,7 @@ def _patch_config(
     symmetric: bool,
     awq_zero_point: bool,
     awq_version: str,
+    autoround_config: dict[str, Any] | None,
     quantized_modules: list[str],
     unquantized_modules: list[str],
 ) -> dict[str, Any]:
@@ -66,7 +67,7 @@ def _patch_config(
         raise FileNotFoundError("Native quantized export requires config.json")
     config = json.loads(config_path.read_text(encoding="utf-8"))
     config.pop("compression_config", None)
-    if method == "gptq":
+    if method in {"gptq", "autoround"}:
         quantization_config = {
             "bits": bits,
             "group_size": group_size,
@@ -85,6 +86,37 @@ def _patch_config(
                 for name in unquantized_modules
             },
         }
+        if method == "autoround":
+            # Keep the loader-facing ABI canonical while recording the native
+            # algorithm independently from its GPTQ-compatible packing.
+            quantization_config.update(
+                {
+                    "algorithm": "autoround",
+                    "provider": "flagos-compressor",
+                    "desc_act": False,
+                    "true_sequential": False,
+                    "static_groups": False,
+                }
+            )
+            if autoround_config is not None:
+                quantization_config.update(autoround_config)
+            # These fields are part of the official AutoGPTQ export contract
+            # and must not be overridden by a training config.
+            quantization_config.update(
+                {
+                    "bits": bits,
+                    "group_size": group_size,
+                    "sym": True,
+                    "data_type": "int",
+                    "provider": "flagos-compressor",
+                    "algorithm": "autoround",
+                    "quant_method": "gptq",
+                    "checkpoint_format": "gptq",
+                    "desc_act": False,
+                    "true_sequential": False,
+                    "static_groups": False,
+                }
+            )
     else:
         quantization_config = {
             "bits": bits,
@@ -118,19 +150,31 @@ def save_native_quantized_model(
     symmetric: bool = True,
     awq_zero_point: bool = True,
     awq_version: str = "gemm",
+    autoround_config: dict[str, Any] | None = None,
     max_shard_size: int | str = "5GB",
 ) -> None:
     if not quantized:
         raise RuntimeError(f"{method.upper()} selectors did not match any Linear modules")
-    if method not in {"gptq", "awq"}:
+    if method not in {"gptq", "awq", "autoround"}:
         raise ValueError(f"Unsupported native quantization method: {method}")
     mismatched = sorted(
-        name for name, result in quantized.items() if result.method != method
+        name for name, result in quantized.items() if result.algorithm != method
     )
     if mismatched:
         raise ValueError(
             f"Native {method.upper()} export received tensors from another method: "
             f"{mismatched[:3]}"
+        )
+    expected_packing = "gptq" if method in {"gptq", "autoround"} else "awq"
+    packing_mismatches = sorted(
+        name
+        for name, result in quantized.items()
+        if result.packing != expected_packing
+    )
+    if packing_mismatches:
+        raise ValueError(
+            f"Native {method.upper()} export requires {expected_packing.upper()} "
+            f"packing: {packing_mismatches[:3]}"
         )
     output = Path(output_path)
     output.mkdir(parents=True, exist_ok=True)
@@ -139,7 +183,7 @@ def save_native_quantized_model(
     state = _state_for_export(model, quantized)
     filename_pattern = (
         f"gptq_model-{bits}bit-{group_size}g{{suffix}}.safetensors"
-        if method == "gptq"
+        if expected_packing == "gptq"
         else "model{suffix}.safetensors"
     )
     split = split_torch_state_dict_into_shards(
@@ -174,7 +218,7 @@ def save_native_quantized_model(
         dict(split.tensor_to_filename),
         total_size=int(split.metadata["total_size"]),
     )
-    if method == "gptq" and split.is_sharded:
+    if expected_packing == "gptq" and split.is_sharded:
         # AutoGPTQ searches for an index alongside its canonical model basename,
         # while Transformers searches model.safetensors.index.json.
         native_index = output / (
@@ -218,11 +262,14 @@ def save_native_quantized_model(
         symmetric=symmetric,
         awq_zero_point=awq_zero_point,
         awq_version=awq_version,
+        autoround_config=autoround_config,
         quantized_modules=quantized_modules,
         unquantized_modules=unquantized_modules,
     )
     external_config_name = (
-        "quantize_config.json" if method == "gptq" else "quant_config.json"
+        "quantize_config.json"
+        if expected_packing == "gptq"
+        else "quant_config.json"
     )
     (output / external_config_name).write_text(
         json.dumps(quantization_config, indent=2) + "\n",

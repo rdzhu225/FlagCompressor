@@ -184,7 +184,7 @@ def test_activation_int8_requires_channel_w8():
         build_quantization_policy(args)
 
 
-@pytest.mark.parametrize("method", ["gptq", "awq"])
+@pytest.mark.parametrize("method", ["gptq", "awq", "autoround"])
 def test_calibrated_example_recipes_build_native_policies(method):
     args = Namespace(
         recipe=str(Path("examples/recipes") / f"{method}.yaml"),
@@ -203,7 +203,7 @@ def test_calibrated_example_recipes_build_native_policies(method):
     policy = build_quantization_policy(args)
 
     assert policy.method == method
-    assert policy.format == method
+    assert policy.format == ("gptq" if method == "autoround" else method)
     assert policy.group_size == 128
     assert policy.calibration.samples == 128
     assert policy.calibration.sequence_length == 512

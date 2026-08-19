@@ -24,19 +24,45 @@ class QuantBackend:
     op_placement: dict[str, str] = field(default_factory=dict)
     runtime_imports: tuple[str, ...] = ()
 
-    def is_available(self) -> bool:
+    def _load_runtime(self) -> bool:
         for module_name in self.runtime_imports:
-            if importlib.util.find_spec(module_name) is None:
+            try:
+                importlib.import_module(module_name)
+            except (ImportError, OSError):
                 return False
+        return True
+
+    def _device_module(self):
+        device = self.device
+        try:
+            return torch.get_device_module(device)
+        except (AttributeError, RuntimeError, ValueError):
+            return getattr(torch, device.type, None)
+
+    def is_available(self) -> bool:
+        if not self._load_runtime():
+            return False
         if self.device_name == "cpu":
             return True
-        if self.device_name.startswith("cuda"):
-            return torch.cuda.is_available()
-        return True
+        try:
+            runtime = self._device_module()
+        except (RuntimeError, TypeError, ValueError):
+            return False
+        available = getattr(runtime, "is_available", None)
+        return bool(available()) if callable(available) else runtime is not None
 
     @property
     def device(self) -> torch.device:
-        return torch.device(self.device_name)
+        if not self._load_runtime():
+            missing = ", ".join(self.runtime_imports)
+            raise RuntimeError(f"Backend runtime is not installed: {missing}")
+        try:
+            return torch.device(self.device_name)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"PyTorch does not recognize device {self.device_name!r}; "
+                f"install and import the {self.name!r} device extension"
+            ) from exc
 
     def move(self, tensor: torch.Tensor) -> torch.Tensor:
         if self.device_name == "cpu":
@@ -47,12 +73,18 @@ class QuantBackend:
         return tensor.detach().cpu()
 
     def synchronize(self) -> None:
-        if self.device_name.startswith("cuda") and torch.cuda.is_available():
-            torch.cuda.synchronize()
+        if not self.is_available() or self.device_name == "cpu":
+            return
+        synchronize = getattr(self._device_module(), "synchronize", None)
+        if callable(synchronize):
+            synchronize()
 
     def empty_cache(self) -> None:
-        if self.device_name.startswith("cuda") and torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        if not self.is_available() or self.device_name == "cpu":
+            return
+        empty_cache = getattr(self._device_module(), "empty_cache", None)
+        if callable(empty_cache):
+            empty_cache()
 
     def supports_op(self, op_name: str) -> bool:
         return GLOBAL_OP_REGISTRY.has(op_name, self.name) or GLOBAL_OP_REGISTRY.has(op_name, "torch")

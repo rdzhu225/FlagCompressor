@@ -11,7 +11,11 @@ COMMANDS = {"convert", "quantize", "inspect", "validate"}
 
 
 def _add_backend_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--backend", default="cpu", choices=["cpu", "cuda"])
+    parser.add_argument(
+        "--backend",
+        default="cpu",
+        help="PyTorch device backend, for example cpu, cuda, npu, mlu, or musa.",
+    )
     parser.add_argument("--device")
 
 
@@ -59,7 +63,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["group", "channel"],
         default=None,
     )
-    quantize.add_argument("--method", choices=["mse", "gptq", "awq"], default=None)
+    quantize.add_argument(
+        "--method",
+        choices=["mse", "gptq", "awq", "autoround"],
+        default=None,
+    )
     quantize.add_argument(
         "--format",
         choices=["compressed-tensors", "gptq", "awq"],
@@ -123,6 +131,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     quantize.add_argument("--awq-n-grid", type=int)
     quantize.add_argument("--awq-max-chunk-memory", type=int)
+    quantize.add_argument("--autoround-iters", type=int)
+    quantize.add_argument(
+        "--autoround-config",
+        help="Official AutoRound config.json or quantization config to import.",
+    )
+    quantize.add_argument("--autoround-lr", type=float)
+    quantize.add_argument("--autoround-minmax-lr", type=float)
+    quantize.add_argument("--autoround-batch-size", type=int)
+    quantize.add_argument("--autoround-gradient-accumulate-steps", type=int)
+    quantize.add_argument("--autoround-momentum", type=float)
+    quantize.add_argument(
+        "--autoround-minmax-tuning",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    quantize.add_argument(
+        "--autoround-quantized-input",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
     quantize.add_argument("--dry-run", action="store_true")
     _add_backend_args(quantize)
 

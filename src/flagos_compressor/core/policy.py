@@ -78,6 +78,34 @@ class AWQPolicy:
 
 
 @dataclass(frozen=True)
+class AutoRoundPolicy:
+    """Native AutoRound controls following the reference implementation."""
+
+    iters: int = 200
+    lr: float | None = None
+    minmax_lr: float | None = None
+    batch_size: int = 8
+    gradient_accumulate_steps: int = 1
+    momentum: float = 0.0
+    enable_minmax_tuning: bool = True
+    enable_quantized_input: bool = True
+
+    def __post_init__(self) -> None:
+        if self.iters <= 0:
+            raise ValueError("autoround.iters must be positive")
+        if self.lr is not None and self.lr <= 0:
+            raise ValueError("autoround.lr must be positive when specified")
+        if self.minmax_lr is not None and self.minmax_lr <= 0:
+            raise ValueError("autoround.minmax_lr must be positive when specified")
+        if self.batch_size <= 0 or self.gradient_accumulate_steps <= 0:
+            raise ValueError(
+                "autoround.batch_size and gradient_accumulate_steps must be positive"
+            )
+        if self.momentum < 0:
+            raise ValueError("autoround.momentum must be non-negative")
+
+
+@dataclass(frozen=True)
 class UnselectedWeightsPolicy:
     """How source-quantized weights outside the selected set are handled."""
 
@@ -115,6 +143,7 @@ class QuantizationPolicy:
     calibration: CalibrationPolicy = field(default_factory=CalibrationPolicy)
     gptq: GPTQPolicy = field(default_factory=GPTQPolicy)
     awq: AWQPolicy = field(default_factory=AWQPolicy)
+    autoround: AutoRoundPolicy = field(default_factory=AutoRoundPolicy)
     unselected: UnselectedWeightsPolicy = field(
         default_factory=UnselectedWeightsPolicy
     )
@@ -140,12 +169,13 @@ class QuantizationPolicy:
         )
         if unknown:
             raise ValueError(f"Unknown selections: {', '.join(unknown)}")
-        if self.method not in {"mse", "gptq", "awq"}:
-            raise ValueError("method must be one of: mse, gptq, awq")
+        if self.method not in {"mse", "gptq", "awq", "autoround"}:
+            raise ValueError("method must be one of: mse, gptq, awq, autoround")
         expected_format = {
             "mse": "compressed-tensors",
             "gptq": "gptq",
             "awq": "awq",
+            "autoround": "gptq",
         }[self.method]
         if self.format is None:
             object.__setattr__(self, "format", expected_format)
@@ -157,15 +187,17 @@ class QuantizationPolicy:
             raise ValueError("num_bits must be 4 or 8")
         if self.activation_num_bits not in (8, 16):
             raise ValueError("activation_num_bits must be 8 or 16")
-        if self.method in {"gptq", "awq"} and self.activation_num_bits != 16:
+        if self.method in {"gptq", "awq", "autoround"} and self.activation_num_bits != 16:
             raise ValueError(f"{self.method.upper()} currently supports weight-only A16")
         if self.method == "awq" and self.num_bits != 4:
             raise ValueError("AutoAWQ GEMM currently supports only 4-bit weights")
         if self.method == "awq" and not self.awq.zero_point:
             raise ValueError("Native AutoAWQ GEMM requires awq.zero_point=true")
+        if self.method == "autoround" and not self.gptq.symmetric:
+            raise ValueError("Native AutoRound currently requires symmetric weights")
         if self.strategy not in {"group", "channel"}:
             raise ValueError("strategy must be 'group' or 'channel'")
-        if self.method in {"gptq", "awq"} and self.strategy != "group":
+        if self.method in {"gptq", "awq", "autoround"} and self.strategy != "group":
             raise ValueError(f"{self.method.upper()} requires group strategy")
         if self.activation_num_bits == 8 and (
             self.num_bits != 8 or self.strategy != "channel"
@@ -183,7 +215,7 @@ class QuantizationPolicy:
                 "group_size",
                 (
                     128
-                    if self.method in {"gptq", "awq"}
+                    if self.method in {"gptq", "awq", "autoround"}
                     else (32 if self.num_bits == 4 else 128)
                 ),
             )

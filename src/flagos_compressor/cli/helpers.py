@@ -6,6 +6,7 @@ from pathlib import Path
 from flagos_compressor.core.plan import ExecutionPlan
 from flagos_compressor.core.policy import (
     AWQPolicy,
+    AutoRoundPolicy,
     CalibrationPolicy,
     GPTQPolicy,
     QuantizationPolicy,
@@ -76,6 +77,7 @@ def load_quantize_recipe(path: str | Path) -> dict:
         "calibration",
         "gptq",
         "awq",
+        "autoround",
     }
     unknown = sorted(set(data) - allowed)
     if unknown:
@@ -128,7 +130,11 @@ def _mapping(value, name: str, allowed: set[str]) -> dict:
     return value
 
 
-def _build_calibration_policy(args, recipe: dict) -> CalibrationPolicy:
+def _build_calibration_policy(
+    args,
+    recipe: dict,
+    official_autoround: dict | None = None,
+) -> CalibrationPolicy:
     config = _mapping(
         recipe.get("calibration"),
         "calibration",
@@ -145,7 +151,20 @@ def _build_calibration_policy(args, recipe: dict) -> CalibrationPolicy:
 
     def value(cli_name: str, config_name: str, default):
         cli_value = getattr(args, cli_name, None)
-        return cli_value if cli_value is not None else config.get(config_name, default)
+        if cli_value is not None:
+            return cli_value
+        if config_name in config:
+            return config[config_name]
+        official_names = {
+            "data": "dataset",
+            "samples": "nsamples",
+            "sequence_length": "seqlen",
+            "seed": "seed",
+        }
+        official_name = official_names.get(config_name)
+        if official_name and official_autoround is not None:
+            return official_autoround.get(official_name, default)
+        return default
 
     data = value("calibration_data", "data", None)
     if isinstance(data, list):
@@ -167,7 +186,11 @@ def _build_calibration_policy(args, recipe: dict) -> CalibrationPolicy:
     )
 
 
-def _build_gptq_policy(args, recipe: dict) -> GPTQPolicy:
+def _build_gptq_policy(
+    args,
+    recipe: dict,
+    official_autoround: dict | None = None,
+) -> GPTQPolicy:
     config = _mapping(
         recipe.get("gptq"),
         "gptq",
@@ -183,7 +206,13 @@ def _build_gptq_policy(args, recipe: dict) -> GPTQPolicy:
 
     def value(cli_name: str, config_name: str, default):
         cli_value = getattr(args, cli_name, None)
-        return cli_value if cli_value is not None else config.get(config_name, default)
+        if cli_value is not None:
+            return cli_value
+        if config_name in config:
+            return config[config_name]
+        if config_name == "symmetric" and official_autoround is not None:
+            return official_autoround.get("sym", default)
+        return default
 
     return GPTQPolicy(
         block_size=int(value("gptq_block_size", "block_size", 128)),
@@ -225,8 +254,95 @@ def _build_awq_policy(args, recipe: dict) -> AWQPolicy:
     )
 
 
+def _build_autoround_policy(
+    args,
+    recipe: dict,
+    official_autoround: dict | None = None,
+) -> AutoRoundPolicy:
+    config = _mapping(
+        recipe.get("autoround"),
+        "autoround",
+        {
+            "iters",
+            "lr",
+            "minmax_lr",
+            "batch_size",
+            "gradient_accumulate_steps",
+            "momentum",
+            "enable_minmax_tuning",
+            "enable_quantized_input",
+            "official_config",
+        },
+    )
+
+    def value(cli_name: str, config_name: str, default):
+        cli_value = getattr(args, cli_name, None)
+        if cli_value is not None:
+            return cli_value
+        if config_name in config:
+            return config[config_name]
+        if official_autoround is None:
+            return default
+        official_name = (
+            "enable_quanted_input"
+            if config_name == "enable_quantized_input"
+            else config_name
+        )
+        return official_autoround.get(official_name, default)
+
+    learning_rate = value("autoround_lr", "lr", None)
+    minmax_learning_rate = value("autoround_minmax_lr", "minmax_lr", None)
+    return AutoRoundPolicy(
+        iters=int(value("autoround_iters", "iters", 200)),
+        lr=float(learning_rate) if learning_rate is not None else None,
+        minmax_lr=(
+            float(minmax_learning_rate)
+            if minmax_learning_rate is not None
+            else None
+        ),
+        batch_size=int(value("autoround_batch_size", "batch_size", 8)),
+        gradient_accumulate_steps=int(
+            value(
+                "autoround_gradient_accumulate_steps",
+                "gradient_accumulate_steps",
+                1,
+            )
+        ),
+        momentum=float(value("autoround_momentum", "momentum", 0.0)),
+        enable_minmax_tuning=bool(
+            value(
+                "autoround_minmax_tuning",
+                "enable_minmax_tuning",
+                True,
+            )
+        ),
+        enable_quantized_input=bool(
+            value(
+                "autoround_quantized_input",
+                "enable_quantized_input",
+                True,
+            )
+        ),
+    )
+
+
 def build_quantization_policy(args) -> QuantizationPolicy:
     recipe = load_quantize_recipe(args.recipe) if args.recipe else {}
+    autoround_recipe = recipe.get("autoround") or {}
+    if autoround_recipe and not isinstance(autoround_recipe, dict):
+        raise ValueError("autoround must be a mapping")
+    official_config_source = getattr(args, "autoround_config", None)
+    if official_config_source is None:
+        official_config_source = autoround_recipe.get("official_config")
+    official_autoround = None
+    if official_config_source is not None:
+        from flagos_compressor.integrations.autoround import (
+            load_official_autoround_config,
+        )
+
+        official_autoround = load_official_autoround_config(
+            official_config_source
+        )
 
     recipe_groups, recipe_names = _parse_selector_items(recipe.get("select"))
     exclude_groups, recipe_excludes = _parse_selector_items(recipe.get("exclude"))
@@ -241,16 +357,32 @@ def build_quantization_policy(args) -> QuantizationPolicy:
 
     def value(name: str, default):
         cli_value = getattr(args, name, None)
-        return cli_value if cli_value is not None else recipe.get(name, default)
+        if cli_value is not None:
+            return cli_value
+        if name in recipe:
+            return recipe[name]
+        if official_autoround is not None:
+            official_name = {
+                "bits": "bits",
+                "group_size": "group_size",
+            }.get(name)
+            if official_name is not None:
+                return official_autoround.get(official_name, default)
+        return default
 
-    method = value("method", "mse")
+    method = value(
+        "method",
+        "autoround" if official_autoround is not None else "mse",
+    )
     num_bits = int(value("bits", 4))
     activation_num_bits = int(value("activation_bits", 16))
     strategy = value("strategy", "group")
     requested_group_size = value("group_size", None)
     if strategy == "group" and requested_group_size is None:
         requested_group_size = (
-            128 if method in {"gptq", "awq"} else (32 if num_bits == 4 else 128)
+            128
+            if method in {"gptq", "awq", "autoround"}
+            else (32 if num_bits == 4 else 128)
         )
     default_chunk_size = 4096 if num_bits == 4 else 1024
     return QuantizationPolicy(
@@ -271,9 +403,10 @@ def build_quantization_policy(args) -> QuantizationPolicy:
         ),
         n_candidates=int(value("n_candidates", 200)),
         chunk_size=int(value("chunk_size", default_chunk_size)),
-        calibration=_build_calibration_policy(args, recipe),
-        gptq=_build_gptq_policy(args, recipe),
+        calibration=_build_calibration_policy(args, recipe, official_autoround),
+        gptq=_build_gptq_policy(args, recipe, official_autoround),
         awq=_build_awq_policy(args, recipe),
+        autoround=_build_autoround_policy(args, recipe, official_autoround),
         unselected=_parse_unselected_policy(recipe.get("unselected")),
     )
 

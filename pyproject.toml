@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 datasets = ["datasets"]
+official-autoround = ["auto-round"]
 
 
 [project.scripts]

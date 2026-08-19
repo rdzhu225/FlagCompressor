@@ -68,7 +68,7 @@ def load_calibration_texts(policy: CalibrationPolicy) -> list[str]:
                         break
     else:
         raise ValueError(
-            "GPTQ/AWQ requires calibration.data or --calibration-data"
+            "GPTQ/AWQ/AutoRound requires calibration.data or --calibration-data"
         )
     if not texts:
         raise ValueError("Calibration source did not contain any usable text")

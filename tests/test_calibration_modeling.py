@@ -10,6 +10,7 @@ from flagos_compressor.calibration.moe import LinearExperts2D, linearize_fused_e
 from flagos_compressor.calibration.runner import quantize_model_sequential
 from flagos_compressor.core.policy import (
     AWQPolicy,
+    AutoRoundPolicy,
     CalibrationPolicy,
     GPTQPolicy,
     QuantizationPolicy,
@@ -148,6 +149,56 @@ def test_tiny_llama_runs_gptq_and_awq_sequentially():
 
         assert len(quantized) == 7
         assert all(result.method == method for result in quantized.values())
+
+
+def test_tiny_llama_runs_native_w8a16_autoround_with_gptq_packing():
+    from transformers import LlamaConfig, LlamaForCausalLM
+
+    torch.manual_seed(17)
+    model = LlamaForCausalLM(
+        LlamaConfig(
+            hidden_size=16,
+            intermediate_size=32,
+            num_hidden_layers=1,
+            num_attention_heads=2,
+            num_key_value_heads=2,
+            vocab_size=32,
+            max_position_embeddings=32,
+            use_cache=False,
+        )
+    ).eval()
+    layers = decoder_layers(model)
+    batches = [
+        {
+            "input_ids": torch.randint(0, 32, (1, 8)),
+            "attention_mask": torch.ones(1, 8, dtype=torch.long),
+        }
+        for _ in range(2)
+    ]
+    samples = capture_first_layer_inputs(
+        model,
+        layers[0][1],
+        batches,
+        device=torch.device("cpu"),
+    )
+    policy = QuantizationPolicy(
+        selections=("linear",),
+        method="autoround",
+        num_bits=8,
+        group_size=8,
+        autoround=AutoRoundPolicy(iters=2, batch_size=1),
+    )
+
+    quantized = quantize_model_sequential(
+        layers,
+        samples,
+        policy,
+        device=torch.device("cpu"),
+    )
+
+    assert len(quantized) == 7
+    assert all(result.algorithm == "autoround" for result in quantized.values())
+    assert all(result.packing == "gptq" for result in quantized.values())
 
 
 def test_tiny_qwen3_moe_runs_gptq_and_awq_without_model_adapter():

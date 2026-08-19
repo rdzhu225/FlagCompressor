@@ -6,8 +6,6 @@ from pathlib import Path
 import tempfile
 from contextlib import contextmanager
 
-import torch
-
 from flagos_compressor.backends.registry import build_backend
 from flagos_compressor.cli.helpers import build_quantization_policy, ensure_no_unmatched, print_plan
 from flagos_compressor.core.executor import execute_plan
@@ -51,9 +49,11 @@ def _run_calibrated(args, policy) -> None:
     from flagos_compressor.formats.native_quantized import save_native_quantized_model
 
     backend = build_backend(args.backend, args.device)
+    if not backend.is_available():
+        raise RuntimeError(
+            f"{backend.name.upper()} calibration requested but the backend is unavailable"
+        )
     device = backend.device
-    if device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA calibration requested but CUDA is unavailable")
     with _calibration_source(args.input, backend) as model_source:
         model, tokenizer = load_transformers_model(
             model_source,
@@ -73,6 +73,13 @@ def _run_calibrated(args, policy) -> None:
             policy,
             device=device,
         )
+        autoround_config = None
+        if policy.method == "autoround":
+            from flagos_compressor.integrations.autoround import (
+                official_autoround_export_config,
+            )
+
+            autoround_config = official_autoround_export_config(policy)
         save_native_quantized_model(
             model_source,
             args.output,
@@ -88,6 +95,7 @@ def _run_calibrated(args, policy) -> None:
             symmetric=policy.gptq.symmetric,
             awq_zero_point=policy.awq.zero_point,
             awq_version=policy.awq.version,
+            autoround_config=autoround_config,
         )
     logger.info(
         "Done. %s-quantized Linear modules: %d",
@@ -125,7 +133,7 @@ def run(args) -> None:
     import flagos_compressor.quantizers.register  # noqa: F401
 
     policy = build_quantization_policy(args)
-    if policy.method in {"gptq", "awq"}:
+    if policy.method in {"gptq", "awq", "autoround"}:
         if args.dry_run:
             profile = scan_hf_safetensors(args.input)
             selected = [

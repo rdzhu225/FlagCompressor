@@ -1,4 +1,4 @@
-"""Sequential Transformers runner for AutoGPTQ- and AutoAWQ-style calibration."""
+"""Sequential Transformers runner for GPTQ, AWQ, and AutoRound calibration."""
 
 from __future__ import annotations
 
@@ -30,6 +30,7 @@ from flagos_compressor.quantizers.awq import (
     search_awq_scale,
     should_skip_awq_clip,
 )
+from flagos_compressor.quantizers.autoround import AutoRoundLinear, SignSGD
 from flagos_compressor.quantizers.gptq import GPTQQuantizer
 
 logger = logging.getLogger(__name__)
@@ -37,8 +38,20 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class NativeQuantizedLayer:
-    method: str
+    """A quantized layer with independent algorithm and checkpoint packing."""
+
+    algorithm: str
     packed: AutoGPTQPacked | AutoAWQPacked
+    packing: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.packing is None:
+            object.__setattr__(self, "packing", self.algorithm)
+
+    @property
+    def method(self) -> str:
+        """Backward-compatible alias for callers written before packing split."""
+        return self.algorithm
 
 
 def _validate_fused_moe_selection(
@@ -62,7 +75,7 @@ def _validate_fused_moe_selection(
             missing = sorted(expert_linears - chosen)
             raise ValueError(
                 f"Routed experts {layer_name}.{root} are partially selected; "
-                "GPTQ/AWQ native runtimes require gate/up/down for every expert. "
+                "Native calibrated runtimes require gate/up/down for every expert. "
                 f"First missing modules: {missing[:3]}"
             )
 
@@ -84,7 +97,7 @@ def _validate_native_shapes(
                 f"{name} out_features={linear.out_features} must be divisible by "
                 f"native pack factor {pack_factor}"
             )
-        if policy.method == "gptq" and linear.in_features % pack_factor:
+        if policy.method in {"gptq", "autoround"} and linear.in_features % pack_factor:
             raise ValueError(
                 f"{name} in_features={linear.in_features} must be divisible by "
                 f"native pack factor {pack_factor}"
@@ -211,6 +224,221 @@ def quantize_layer_gptq(
     return results
 
 
+def _hidden_output(output: Any) -> torch.Tensor:
+    hidden = output[0] if isinstance(output, (tuple, list)) else output
+    if hasattr(output, "last_hidden_state"):
+        hidden = output.last_hidden_state
+    if not isinstance(hidden, torch.Tensor):
+        raise TypeError("Decoder layer did not return a hidden-state tensor")
+    return hidden
+
+
+def _sample_indices(
+    count: int,
+    requested: int,
+    generator: torch.Generator,
+) -> list[int]:
+    if requested <= count:
+        return torch.randperm(count, generator=generator)[:requested].tolist()
+    return torch.randint(count, (requested,), generator=generator).tolist()
+
+
+def _restore_submodules(
+    layer: nn.Module,
+    linears: dict[str, nn.Linear],
+) -> None:
+    for name, linear in linears.items():
+        layer.set_submodule(name, linear)
+
+
+def _empty_device_cache(device: torch.device) -> None:
+    if device.type == "cpu":
+        return
+    try:
+        runtime = torch.get_device_module(device)
+    except (AttributeError, RuntimeError):
+        runtime = getattr(torch, device.type, None)
+    empty_cache = getattr(runtime, "empty_cache", None)
+    if callable(empty_cache):
+        empty_cache()
+
+
+def quantize_layer_autoround(
+    layer_name: str,
+    layer: nn.Module,
+    fp_samples: list[tuple[tuple[Any, ...], dict[str, Any]]],
+    quantized_samples: list[tuple[tuple[Any, ...], dict[str, Any]]],
+    policy: QuantizationPolicy,
+    *,
+    device: torch.device,
+    layer_index: int = 0,
+) -> tuple[
+    dict[str, NativeQuantizedLayer],
+    list[tuple[tuple[Any, ...], dict[str, Any]]],
+    list[tuple[tuple[Any, ...], dict[str, Any]]],
+]:
+    """Optimize one block and return its FP and quantized output streams."""
+    if not fp_samples:
+        raise ValueError("AutoRound requires at least one calibration sample")
+    linears = selected_linears(layer_name, layer, policy)
+    fp_outputs = forward_layer_samples(layer, fp_samples, device=device)
+    input_samples = (
+        quantized_samples
+        if policy.autoround.enable_quantized_input
+        else fp_samples
+    )
+    if not linears:
+        quantized_outputs = forward_layer_samples(
+            layer,
+            input_samples,
+            device=device,
+        )
+        return {}, fp_outputs, quantized_outputs
+
+    _validate_native_shapes(linears, policy)
+    _validate_fused_moe_selection(layer_name, layer, set(linears))
+    layer.to(device)
+    original_grad_state = [
+        (parameter, parameter.requires_grad) for parameter in layer.parameters()
+    ]
+    for parameter, _ in original_grad_state:
+        parameter.requires_grad_(False)
+
+    wrappers = {
+        name: AutoRoundLinear(
+            linear,
+            bits=policy.num_bits,
+            group_size=int(policy.group_size or -1),
+            enable_minmax_tuning=policy.autoround.enable_minmax_tuning,
+        )
+        for name, linear in linears.items()
+    }
+    for name, wrapper in wrappers.items():
+        layer.set_submodule(name, wrapper)
+
+    rounding_parameters = [wrapper.value for wrapper in wrappers.values()]
+    range_parameters = [
+        parameter
+        for wrapper in wrappers.values()
+        for parameter in (wrapper.min_scale, wrapper.max_scale)
+        if parameter.requires_grad
+    ]
+    learning_rate = policy.autoround.lr or (1.0 / policy.autoround.iters)
+    minmax_learning_rate = policy.autoround.minmax_lr or learning_rate
+    parameter_groups: list[dict[str, Any]] = [
+        {"params": rounding_parameters, "lr": learning_rate}
+    ]
+    if range_parameters:
+        parameter_groups.append(
+            {"params": range_parameters, "lr": minmax_learning_rate}
+        )
+    optimizer = SignSGD(
+        parameter_groups,
+        lr=learning_rate,
+        momentum=policy.autoround.momentum,
+    )
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(policy.calibration.seed + layer_index)
+    best_loss = float("inf")
+    best_parameters: dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
+    effective_batch_size = min(
+        len(input_samples),
+        policy.autoround.batch_size
+        * policy.autoround.gradient_accumulate_steps,
+    )
+
+    try:
+        with torch.enable_grad():
+            for iteration in range(policy.autoround.iters):
+                optimizer.zero_grad(set_to_none=True)
+                indices = _sample_indices(
+                    len(input_samples),
+                    effective_batch_size,
+                    generator,
+                )
+                loss_value = 0.0
+                for sample_index in indices:
+                    args, kwargs = input_samples[sample_index]
+                    moved_args = move_to_device(args, device)
+                    moved_kwargs = move_to_device(
+                        sanitize_kwargs(layer, kwargs),
+                        device,
+                    )
+                    predicted = _hidden_output(layer(*moved_args, **moved_kwargs))
+                    target = fp_outputs[sample_index][0][0].to(
+                        device=device,
+                        dtype=predicted.dtype,
+                    )
+                    sample_loss = torch.mean(
+                        (predicted.float() - target.float()).square()
+                    )
+                    (sample_loss / len(indices)).backward()
+                    loss_value += float(sample_loss.detach()) / len(indices)
+
+                if loss_value < best_loss:
+                    best_loss = loss_value
+                    best_parameters = {
+                        name: (
+                            wrapper.value.detach().cpu().clone(),
+                            wrapper.min_scale.detach().cpu().clone(),
+                            wrapper.max_scale.detach().cpu().clone(),
+                        )
+                        for name, wrapper in wrappers.items()
+                    }
+                remaining = 1.0 - (iteration / policy.autoround.iters)
+                optimizer.param_groups[0]["lr"] = learning_rate * remaining
+                if len(optimizer.param_groups) > 1:
+                    optimizer.param_groups[1]["lr"] = (
+                        minmax_learning_rate * remaining
+                    )
+                optimizer.step()
+                with torch.no_grad():
+                    for wrapper in wrappers.values():
+                        wrapper.min_scale.clamp_(0, 1)
+                        wrapper.max_scale.clamp_(0, 1)
+
+        results: dict[str, NativeQuantizedLayer] = {}
+        with torch.no_grad():
+            for name, wrapper in wrappers.items():
+                best_value, best_minimum, best_maximum = best_parameters[name]
+                wrapper.value.copy_(best_value.to(device))
+                wrapper.min_scale.copy_(best_minimum.to(device))
+                wrapper.max_scale.copy_(best_maximum.to(device))
+                quantized = wrapper.quantized()
+                linear = linears[name]
+                linear.weight.copy_(quantized.weight)
+                g_idx = torch.arange(
+                    linear.in_features,
+                    device=device,
+                    dtype=torch.int32,
+                ) // int(policy.group_size or -1)
+                packed = pack_autogptq(
+                    quantized.weight.cpu(),
+                    quantized.scales.cpu(),
+                    quantized.zeros.cpu(),
+                    g_idx.cpu(),
+                    bits=policy.num_bits,
+                    scale_dtype=linear.weight.dtype,
+                )
+                results[f"{layer_name}.{name}"] = NativeQuantizedLayer(
+                    "autoround",
+                    packed,
+                    packing="gptq",
+                )
+    finally:
+        _restore_submodules(layer, linears)
+        for parameter, requires_grad in original_grad_state:
+            parameter.requires_grad_(requires_grad)
+
+    quantized_outputs = forward_layer_samples(
+        layer,
+        input_samples,
+        device=device,
+    )
+    logger.info("%s AutoRound best calibration loss: %.6g", layer_name, best_loss)
+    return results, fp_outputs, quantized_outputs
+
+
 @torch.no_grad()
 def quantize_layer_awq(
     layer_name: str,
@@ -329,6 +557,7 @@ def quantize_model_sequential(
     device: torch.device,
 ) -> dict[str, NativeQuantizedLayer]:
     samples = first_layer_samples
+    fp_samples = first_layer_samples
     all_results: dict[str, NativeQuantizedLayer] = {}
     for layer_index, (layer_name, layer) in enumerate(layers, start=1):
         logger.info(
@@ -346,19 +575,30 @@ def quantize_model_sequential(
             results = quantize_layer_awq(
                 layer_name, layer, samples, policy, device=device
             )
+        elif policy.method == "autoround":
+            results, fp_samples, samples = quantize_layer_autoround(
+                layer_name,
+                layer,
+                fp_samples,
+                samples,
+                policy,
+                device=device,
+                layer_index=layer_index,
+            )
         else:
             raise ValueError(f"Sequential runner does not support {policy.method}")
         all_results.update(results)
-        samples = forward_layer_samples(layer, samples, device=device)
+        if policy.method != "autoround":
+            samples = forward_layer_samples(layer, samples, device=device)
         layer.cpu()
-        if device.type == "cuda":
-            torch.cuda.empty_cache()
+        _empty_device_cache(device)
     return all_results
 
 
 __all__ = [
     "NativeQuantizedLayer",
     "quantize_layer_awq",
+    "quantize_layer_autoround",
     "quantize_layer_gptq",
     "quantize_model_sequential",
     "selected_linears",

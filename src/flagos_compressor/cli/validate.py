@@ -16,6 +16,8 @@ def run(args) -> None:
         print(f"INT8 tensors: {result['int8_tensors']}")
         if result["native_method"]:
             print(f"Native format: {result['native_method'].upper()}")
+            if result["native_algorithm"] != result["native_method"]:
+                print(f"Quantization algorithm: {result['native_algorithm'].upper()}")
             print(
                 "Native quantized Linear modules: "
                 f"{result['native_quantized_tensors']}"
