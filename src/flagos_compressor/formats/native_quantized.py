@@ -67,16 +67,11 @@ def _patch_config(
     if not config_path.exists():
         raise FileNotFoundError("Native quantized export requires config.json")
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    runtime_config = getattr(model, "config", None)
-    if runtime_config is not None and hasattr(runtime_config, "to_dict"):
-        # AutoModelForCausalLM may intentionally select the text-only model from
-        # a multimodal source checkpoint (for example Qwen3.5/3.6).  In that
-        # case copying the source config verbatim makes runtimes instantiate the
-        # outer vision-language architecture for text-only exported weights.
-        config = runtime_config.to_dict()
-        config["architectures"] = [model.__class__.__name__]
-        if "use_cache" in config:
-            config["use_cache"] = True
+    # AutoModelForCausalLM may intentionally select the text-only model from a
+    # multimodal source checkpoint (for example Qwen3.5/3.6).  Keep the outer
+    # config because runtimes use its nested text config, but declare the model
+    # class whose state dict was actually exported.
+    config["architectures"] = [model.__class__.__name__]
     config.pop("compression_config", None)
     if method in {"gptq", "autoround"}:
         quantization_config = {

@@ -24,15 +24,6 @@ class _ToyModel(torch.nn.Module):
         self.untouched = torch.nn.Linear(8, 8, bias=False)
 
 
-class _RuntimeConfig:
-    def to_dict(self):
-        return {
-            "model_type": "text_only",
-            "architectures": ["StaleOuterModel"],
-            "use_cache": False,
-        }
-
-
 def _source_checkpoint(tmp_path, model):
     source = tmp_path / "source"
     source.mkdir()
@@ -113,9 +104,8 @@ def test_native_export_is_sharded_configured_and_validated(tmp_path, method):
     assert result["native_quantized_tensors"] == 1
 
 
-def test_native_export_uses_actual_runtime_model_config(tmp_path):
+def test_native_export_declares_actual_runtime_model_architecture(tmp_path):
     model = _ToyModel().eval()
-    model.config = _RuntimeConfig()
     source = _source_checkpoint(tmp_path, model)
     source_config = source / "config.json"
     source_config.write_text(
@@ -151,9 +141,8 @@ def test_native_export_uses_actual_runtime_model_config(tmp_path):
     )
 
     config = json.loads((output / "config.json").read_text(encoding="utf-8"))
-    assert config["model_type"] == "text_only"
+    assert config["model_type"] == "outer_multimodal"
     assert config["architectures"] == ["_ToyModel"]
-    assert config["use_cache"] is True
 
 
 def test_native_awq_export_skips_unselected_fused_moe_unit(tmp_path):
