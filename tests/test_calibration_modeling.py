@@ -100,6 +100,34 @@ def test_awq_moe_mapping_balances_router_without_quantizing_it():
     assert "mlp.gate" not in mapping.quantized_names
 
 
+def test_awq_mapping_skips_gqa_value_to_output_scale_when_value_is_narrower():
+    class Attention(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.q_proj = torch.nn.Linear(8, 8, bias=False)
+            self.k_proj = torch.nn.Linear(8, 2, bias=False)
+            self.v_proj = torch.nn.Linear(8, 2, bias=False)
+            self.o_proj = torch.nn.Linear(8, 8, bias=False)
+
+    class Block(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.input_layernorm = torch.nn.LayerNorm(8)
+            self.self_attn = Attention()
+
+    block = Block()
+    selected = {
+        name
+        for name, module in block.named_modules()
+        if isinstance(module, torch.nn.Linear)
+    }
+
+    mappings = infer_awq_mappings(block, selected)
+
+    assert any(mapping.inspect_name == "self_attn" for mapping in mappings)
+    assert not any(mapping.inspect_name == "self_attn.o_proj" for mapping in mappings)
+
+
 def test_tiny_llama_runs_gptq_and_awq_sequentially():
     from transformers import LlamaConfig, LlamaForCausalLM
 

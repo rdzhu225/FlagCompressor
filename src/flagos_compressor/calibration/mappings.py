@@ -50,6 +50,28 @@ def _is_weight_consumer(module: nn.Module | None) -> bool:
     return isinstance(weight, nn.Parameter) and weight.dim() == 2
 
 
+def _can_balance_linear_pair(
+    previous: nn.Module | None,
+    consumer: nn.Module | None,
+) -> bool:
+    """Whether the producer has enough output channels for consumer scales.
+
+    A fused QKV producer may have extra leading channels, which AutoAWQ handles
+    by scaling the trailing value slice. GQA/MQA value projections can instead
+    be narrower than the repeated attention input consumed by ``o_proj``; that
+    relation cannot be equalized with a single producer-weight transform.
+    """
+    previous_weight = getattr(previous, "weight", None)
+    consumer_weight = getattr(consumer, "weight", None)
+    return (
+        isinstance(previous_weight, nn.Parameter)
+        and isinstance(consumer_weight, nn.Parameter)
+        and previous_weight.dim() == 2
+        and consumer_weight.dim() == 2
+        and previous_weight.shape[0] >= consumer_weight.shape[1]
+    )
+
+
 def infer_awq_mappings(layer: nn.Module, selected: set[str]) -> list[AWQMapping]:
     """Infer AutoAWQ scale relations from common Transformers module structure."""
     modules = dict(layer.named_modules())
@@ -114,7 +136,10 @@ def infer_awq_mappings(layer: nn.Module, selected: set[str]) -> list[AWQMapping]
             ),
             None,
         )
-        if value and output:
+        if value and output and _can_balance_linear_pair(
+            modules.get(value),
+            modules.get(output),
+        ):
             mappings.append(AWQMapping(value, (output,), (output,), output, output))
 
     mlp_roots = [
