@@ -233,8 +233,17 @@ def apply_awq_scale(
         if previous.bias is not None:
             previous.bias[-scales.numel() :].div_(scales)
     elif hasattr(previous, "weight") and previous.weight is not None:
-        # Gemma-style RMSNorm uses (1 + weight), unlike the standard norm.
-        if "gemma" in previous.__class__.__name__.lower():
+        # Some RMSNorm implementations store a zero-centered parameter and use
+        # ``1 + weight`` in forward.  Equalizing the raw parameter would break
+        # the algebraic identity; transform its effective weight instead.
+        class_name = previous.__class__.__name__.lower().replace("_", "")
+        zero_centered_families = (
+            "gemma",
+            "minimaxm3",
+            "qwen35",
+            "qwen3next",
+        )
+        if any(token in class_name for token in zero_centered_families):
             previous.weight.add_(1).div_(scales).sub_(1)
         else:
             previous.weight.div_(scales)

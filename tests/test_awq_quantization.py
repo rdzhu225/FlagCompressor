@@ -3,6 +3,7 @@ from torch import nn
 
 from flagos_compressor.packing.autoawq import pack_autoawq_gemm
 from flagos_compressor.quantizers.awq import (
+    apply_awq_scale,
     pseudo_quantize_awq,
     search_awq_clip,
     search_awq_scale,
@@ -80,3 +81,22 @@ def test_awq_scale_and_clip_search_return_channelwise_values():
     )
     assert maxima.shape == (8, 2, 1)
     assert torch.isfinite(maxima).all()
+
+
+def test_awq_scale_preserves_zero_centered_qwen_rmsnorm_linear_pair():
+    class Qwen3_5RMSNorm(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = nn.Parameter(torch.tensor([0.1, -0.2, 0.3, -0.4]))
+
+        def forward(self, inputs):
+            return inputs * (1 + self.weight)
+
+    norm = Qwen3_5RMSNorm()
+    linear = nn.Linear(4, 3, bias=False)
+    inputs = torch.randn(2, 4)
+    expected = linear(norm(inputs))
+
+    apply_awq_scale(norm, [linear], torch.tensor([0.5, 2.0, 0.25, 4.0]))
+
+    torch.testing.assert_close(linear(norm(inputs)), expected)
