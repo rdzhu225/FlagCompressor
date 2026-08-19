@@ -24,6 +24,15 @@ class _ToyModel(torch.nn.Module):
         self.untouched = torch.nn.Linear(8, 8, bias=False)
 
 
+class _RuntimeConfig:
+    def to_dict(self):
+        return {
+            "model_type": "text_only",
+            "architectures": ["StaleOuterModel"],
+            "use_cache": False,
+        }
+
+
 def _source_checkpoint(tmp_path, model):
     source = tmp_path / "source"
     source.mkdir()
@@ -102,6 +111,49 @@ def test_native_export_is_sharded_configured_and_validated(tmp_path, method):
     assert result["valid"], result["errors"]
     assert result["native_method"] == method
     assert result["native_quantized_tensors"] == 1
+
+
+def test_native_export_uses_actual_runtime_model_config(tmp_path):
+    model = _ToyModel().eval()
+    model.config = _RuntimeConfig()
+    source = _source_checkpoint(tmp_path, model)
+    source_config = source / "config.json"
+    source_config.write_text(
+        json.dumps(
+            {
+                "model_type": "outer_multimodal",
+                "architectures": ["StaleOuterModel"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    scales = torch.full((8, 1), 0.05)
+    zeros = torch.full((8, 1), 8.0)
+    codes = torch.clamp(torch.round(model.proj.weight / scales) + zeros, 0, 15)
+    fake = scales * (codes - zeros)
+    packed = pack_autogptq(
+        fake,
+        scales,
+        zeros,
+        torch.zeros(8, dtype=torch.int32),
+        bits=4,
+    )
+    output = tmp_path / "runtime-config"
+
+    save_native_quantized_model(
+        source,
+        output,
+        model,
+        {"proj": NativeQuantizedLayer("gptq", packed)},
+        method="gptq",
+        bits=4,
+        group_size=8,
+    )
+
+    config = json.loads((output / "config.json").read_text(encoding="utf-8"))
+    assert config["model_type"] == "text_only"
+    assert config["architectures"] == ["_ToyModel"]
+    assert config["use_cache"] is True
 
 
 def test_native_awq_export_skips_unselected_fused_moe_unit(tmp_path):
