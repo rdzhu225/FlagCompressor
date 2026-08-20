@@ -115,6 +115,13 @@ per-token INT8 activations. Fused routed-expert banks are expanded to the standa
 W8A8 requires `--bits 8 --strategy channel`; `--group-size` is not accepted.
 Use `--scale-dtype bf16` to emit BF16 `weight_scale` tensors.
 
+For fused MoE model types without a registered layout adapter, the CLI can
+infer the 3D bank order from a consistent `gate_up_proj` / `down_proj` pair:
+`[E, 2I, H]` plus `[E, H, I]` is treated as `[E, out, in]`, while
+`[E, H, 2I]` plus `[E, I, H]` is treated as `[E, in, out]`. Every discovered
+pair must be complete, valid, and agree on the same order; otherwise
+quantization stops instead of guessing.
+
 ### GPTQ (AutoGPTQ-compatible)
 
 ```bash
