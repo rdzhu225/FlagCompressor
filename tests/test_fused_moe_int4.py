@@ -9,8 +9,11 @@ import flagos_compressor.formats.register  # noqa: F401
 import flagos_compressor.quantizers.register  # noqa: F401
 from flagos_compressor.backends.base import BackendRunContext
 from flagos_compressor.backends.registry import build_backend
+from flagos_compressor.cli.main import main
 from flagos_compressor.core.executor import execute_plan
 from flagos_compressor.core.moe_layout import (
+    InferredInOutMoeLayout,
+    InferredOutInMoeLayout,
     Qwen35MoeLayout,
     select_moe_layout,
 )
@@ -83,6 +86,64 @@ def test_select_layout_refuses_unknown_model():
     # Unknown layouts must be rejected, not guessed (Qwen3-VL needs a transpose).
     with pytest.raises(ValueError, match="not supported"):
         select_moe_layout({"model_type": "qwen3_vl_moe"})
+
+
+def test_select_unknown_layout_infers_out_in_from_paired_bank_shapes():
+    layout = select_moe_layout(
+        {"model_type": "hy_v4", "architectures": ["HYV4ForCausalLM"]},
+        [
+            ("model.layers.1.mlp.experts.gate_up_proj", (8, 48, 64)),
+            ("model.layers.1.mlp.experts.down_proj", (8, 64, 24)),
+        ],
+    )
+    assert isinstance(layout, InferredOutInMoeLayout)
+    assert layout.per_expert_out_in("gate_up_proj", (8, 48, 64)) == (24, 64)
+
+
+def test_select_unknown_layout_infers_in_out_from_paired_bank_shapes():
+    layout = select_moe_layout(
+        {"model_type": "unknown_moe"},
+        [
+            ("model.layers.1.mlp.experts.gate_up_proj", (8, 64, 48)),
+            ("model.layers.1.mlp.experts.down_proj", (8, 24, 64)),
+        ],
+    )
+    assert isinstance(layout, InferredInOutMoeLayout)
+    assert layout.per_expert_out_in("gate_up_proj", (8, 64, 48)) == (24, 64)
+
+
+def test_select_unknown_layout_refuses_incomplete_shape_evidence():
+    with pytest.raises(ValueError, match="shape inference.*failed"):
+        select_moe_layout(
+            {"model_type": "unknown_moe"},
+            [("model.layers.1.mlp.experts.gate_up_proj", (8, 48, 64))],
+        )
+
+
+def test_select_unknown_layout_refuses_conflicting_modules():
+    with pytest.raises(ValueError, match="disagree"):
+        select_moe_layout(
+            {"model_type": "unknown_moe"},
+            [
+                ("model.layers.1.mlp.experts.gate_up_proj", (8, 48, 64)),
+                ("model.layers.1.mlp.experts.down_proj", (8, 64, 24)),
+                ("model.layers.2.mlp.experts.gate_up_proj", (8, 64, 48)),
+                ("model.layers.2.mlp.experts.down_proj", (8, 24, 64)),
+            ],
+        )
+
+
+def test_select_unknown_layout_refuses_one_malformed_module():
+    with pytest.raises(ValueError, match="incomplete or inconsistent"):
+        select_moe_layout(
+            {"model_type": "unknown_moe"},
+            [
+                ("model.layers.1.mlp.experts.gate_up_proj", (8, 48, 64)),
+                ("model.layers.1.mlp.experts.down_proj", (8, 64, 24)),
+                ("model.layers.2.mlp.experts.gate_up_proj", (8, 50, 64)),
+                ("model.layers.2.mlp.experts.down_proj", (8, 64, 24)),
+            ],
+        )
 
 
 # --------------------------------------------------------------------------
@@ -344,7 +405,7 @@ def _make_fused_checkpoint(path: Path, model_type="qwen3_5_moe") -> None:
     num_experts = 4
     state = {
         "model.layers.0.mlp.experts.gate_up_proj": torch.randn(
-            num_experts, 16, 64, dtype=torch.bfloat16
+            num_experts, 64, 64, dtype=torch.bfloat16
         ),
         "model.layers.0.mlp.experts.down_proj": torch.randn(
             num_experts, 64, 32, dtype=torch.bfloat16
@@ -364,6 +425,53 @@ def _make_fused_checkpoint(path: Path, model_type="qwen3_5_moe") -> None:
         json.dump({"metadata": {"total_size": total_size}, "weight_map": weight_map}, f)
     with (path / "config.json").open("w") as f:
         json.dump({"torch_dtype": "bfloat16", "model_type": model_type, "num_experts": num_experts}, f)
+
+
+def test_cli_dry_run_infers_unknown_model_layout_from_bank_shapes(tmp_path, capsys):
+    source = tmp_path / "source-hy-v4"
+    _make_fused_checkpoint(source, model_type="hy_v4")
+
+    main(
+        [
+            "quantize",
+            "--input",
+            str(source),
+            "--output",
+            str(tmp_path / "unused-output"),
+            "--select",
+            "moe.routed",
+            "--dry-run",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert "compressed_tensors_int4_moe_fused: 2" in output
+
+
+def test_cli_executes_inferred_unknown_model_layout(tmp_path):
+    source = tmp_path / "source-hy-v4"
+    output = tmp_path / "quantized-hy-v4"
+    _make_fused_checkpoint(source, model_type="hy_v4")
+
+    main(
+        [
+            "quantize",
+            "--input",
+            str(source),
+            "--output",
+            str(output),
+            "--select",
+            "moe.routed",
+            "--n-candidates",
+            "8",
+            "--chunk-size",
+            "16",
+        ]
+    )
+
+    result = validate_artifact(output)
+    assert result["valid"], result["errors"]
+    assert result["int4_tensors"] == 12
 
 
 def test_fused_moe_end_to_end_validates(tmp_path):

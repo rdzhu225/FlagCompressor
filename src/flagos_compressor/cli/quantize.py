@@ -125,7 +125,14 @@ def _load_moe_layout(model_path: str, profile, policy):
         )
     with config_path.open("r", encoding="utf-8") as f:
         config = json.load(f)
-    return select_moe_layout(config)
+    fused_banks = (
+        (tensor.name, tensor.effective_logical_shape)
+        for tensor in profile.tensors.values()
+        if tensor.module_kind == "moe_routed_fused"
+    )
+    layout = select_moe_layout(config, fused_banks)
+    logger.info("Using fused routed-expert layout: %s", layout.name)
+    return layout
 
 
 def run(args) -> None:
