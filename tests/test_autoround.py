@@ -1,5 +1,7 @@
 import torch
 
+import flagos_compressor.calibration.runner as calibration_runner
+from flagos_compressor.core.policy import AutoRoundPolicy, QuantizationPolicy
 from flagos_compressor.quantizers.autoround import (
     AutoRoundLinear,
     SignSGD,
@@ -59,3 +61,41 @@ def test_autoround_linear_keeps_native_dtype_and_shapes():
     assert result.weight.dtype == linear.weight.dtype
     assert result.scales.shape == (8, 2)
     assert result.zeros.shape == (8, 2)
+
+
+def test_autoround_evaluates_state_after_final_optimizer_step(monkeypatch):
+    class Block(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8, bias=False)
+
+        def forward(self, hidden_states):
+            return self.proj(hidden_states)
+
+    block = Block().eval()
+    sample = ((torch.randn(1, 4, 8),), {})
+    calls: list[bool] = []
+    original_loss = calibration_runner._autoround_loss
+
+    def counting_loss(*args, **kwargs):
+        calls.append(kwargs["backward"])
+        return original_loss(*args, **kwargs)
+
+    monkeypatch.setattr(calibration_runner, "_autoround_loss", counting_loss)
+    policy = QuantizationPolicy(
+        include_names=(r"\.proj\.weight$",),
+        method="autoround",
+        group_size=8,
+        autoround=AutoRoundPolicy(iters=2, batch_size=1),
+    )
+
+    calibration_runner.quantize_layer_autoround(
+        "layer",
+        block,
+        [sample],
+        [sample],
+        policy,
+        device=torch.device("cpu"),
+    )
+
+    assert calls == [True, True, False]

@@ -1,4 +1,7 @@
-from flagos_compressor.backends.registry import build_backend
+from flagos_compressor.backends.registry import (
+    BUILTIN_DEVICE_BACKENDS,
+    build_backend,
+)
 from flagos_compressor.cli.main import build_parser
 
 
@@ -8,6 +11,10 @@ def test_domestic_backend_is_constructed_without_hard_coded_cli_adapter():
     assert backend.name == "npu"
     assert backend.device_name == "npu:0"
     assert backend.runtime_imports == ("torch_npu",)
+
+
+def test_five_builtin_device_backends_are_documented():
+    assert BUILTIN_DEVICE_BACKENDS == ("cpu", "cuda", "npu", "mlu", "musa")
 
 
 def test_custom_pytorch_backend_uses_requested_device_name():

@@ -5,6 +5,8 @@ from flagos_compressor.backends.cpu import CpuBackend
 from flagos_compressor.backends.cuda import CudaBackend
 
 
+BUILTIN_DEVICE_BACKENDS = ("cpu", "cuda", "npu", "mlu", "musa")
+
 _RUNTIME_IMPORTS = {
     "npu": ("torch_npu",),
     "mlu": ("torch_mlu",),
@@ -28,3 +30,6 @@ def build_backend(
         fallback_policy=fallback_policy,
         runtime_imports=_RUNTIME_IMPORTS.get(name, ()),
     )
+
+
+__all__ = ["BUILTIN_DEVICE_BACKENDS", "build_backend"]

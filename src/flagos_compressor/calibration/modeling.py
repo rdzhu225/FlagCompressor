@@ -34,7 +34,7 @@ def load_transformers_model(
     model.eval()
     from flagos_compressor.calibration.moe import linearize_fused_experts
 
-    linearize_fused_experts(model, calibrate_all_experts=True)
+    linearize_fused_experts(model)
     config = getattr(model, "config", None)
     text_config = getattr(config, "text_config", config)
     if text_config is not None and hasattr(text_config, "use_cache"):

@@ -76,9 +76,8 @@ class _UngatedExpert(nn.Module):
 
 
 class LinearExperts2D(nn.ModuleList):
-    def __init__(self, original: nn.Module, *, calibrate_all_experts: bool = True):
+    def __init__(self, original: nn.Module):
         self.num_experts = int(original.down_proj.shape[0])
-        self.calibrate_all_experts = calibrate_all_experts
         self.has_gate = isinstance(getattr(original, "gate_up_proj", None), nn.Parameter)
         self.has_bias = isinstance(getattr(original, "down_proj_bias", None), nn.Parameter)
         down = original.down_proj
@@ -147,12 +146,12 @@ class LinearExperts2D(nn.ModuleList):
         ).permute(2, 1, 0)
         for expert_index, expert in enumerate(self):
             top_k_position, token_indices = torch.where(expert_mask[expert_index])
-            if self.calibrate_all_experts:
-                expert_output = expert(hidden_states)[token_indices]
-            else:
-                expert_output = expert(hidden_states[token_indices])
             if token_indices.numel() == 0:
                 continue
+            # Calibration hooks must observe the tokens selected by the router,
+            # not every token in the batch. Otherwise every expert accumulates
+            # the same Hessian/AWQ statistics and loses its routed distribution.
+            expert_output = expert(hidden_states[token_indices])
             weighted = expert_output * top_k_weights[
                 token_indices, top_k_position, None
             ]
@@ -167,11 +166,7 @@ def _is_fused_experts(module: nn.Module) -> bool:
     )
 
 
-def linearize_fused_experts(
-    model: nn.Module,
-    *,
-    calibrate_all_experts: bool = True,
-) -> list[str]:
+def linearize_fused_experts(model: nn.Module) -> list[str]:
     targets = [
         (name, module)
         for name, module in model.named_modules()
@@ -180,10 +175,7 @@ def linearize_fused_experts(
     for name, module in targets:
         model.set_submodule(
             name,
-            LinearExperts2D(
-                module,
-                calibrate_all_experts=calibrate_all_experts,
-            ),
+            LinearExperts2D(module),
         )
     return [name for name, _ in targets]
 

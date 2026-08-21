@@ -51,6 +51,25 @@ exclude:
     )
 
 
+def test_version_one_rejects_calibrated_recipe_fields(tmp_path):
+    recipe = tmp_path / "legacy-gptq.yaml"
+    recipe.write_text(
+        """
+version: 1
+method: gptq
+calibration:
+  data: calibration.txt
+select:
+  - linear
+""",
+        encoding="utf-8",
+    )
+    args = Namespace(recipe=str(recipe))
+
+    with pytest.raises(ValueError, match="version 2"):
+        build_quantization_policy(args)
+
+
 def test_int8_cli_uses_w8a16_default_group_size():
     args = Namespace(
         recipe=None,

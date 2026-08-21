@@ -14,6 +14,15 @@ The official AutoRound package is not required for native quantization. Install
 `pip install -e '.[official-autoround]'` only when running the optional official
 reference implementation or parity checks.
 
+## Device backends
+
+Five device types have built-in backend names: `cpu`, `cuda`, `npu`, `mlu`,
+and `musa`. CPU and CUDA use native PyTorch directly. NPU, MLU, and MUSA load
+`torch_npu`, `torch_mlu`, and `torch_musa` respectively only when selected.
+Other PyTorch device extensions can be used by passing their registered device
+type and `--device`; they are accepted through the generic backend and are not
+counted among the five built-ins.
+
 ## Inspect
 
 ```bash
@@ -199,11 +208,27 @@ hooks handle dense and routed-MoE models. Routed experts must be selected as a
 complete gate/up/down set. Source FP4/FP8 checkpoints are staged as BF16 before
 calibration.
 
-Calibration data can be a local `.txt`, `.json`, or `.jsonl` file. A Hugging
-Face dataset name is also accepted when the optional `datasets` package is
-installed. The default is 128 examples packed into 512-token blocks; use
-`--calibration-samples` and `--calibration-seq-length` to change it. Ready-made
-recipes are in `examples/recipes/`.
+Calibration data can use any of these formats (`text` below can be changed with
+`--calibration-text-column`):
+
+- `.txt`/`.text`: one sample per non-empty line;
+- `.jsonl`: one JSON string or `{"text": "sample"}` object per line;
+- `.json`: a top-level list of strings/objects, `{"data": [...]}`, or
+  `{"text": [...]}`;
+- a Hugging Face dataset name whose selected split contains a string `text`
+  column; this form requires the optional `datasets` package.
+
+For example:
+
+```jsonl
+{"text": "The first calibration sample."}
+{"text": "The second calibration sample."}
+```
+
+The default is 128 examples packed into 512-token blocks; use
+`--calibration-samples` and `--calibration-seq-length` to change it. Empty
+records and examples longer than the configured sequence length are skipped.
+Ready-made recipes are in `examples/recipes/`.
 
 Selections can be combined:
 
@@ -238,8 +263,10 @@ exclude:
 
 Recipe fields:
 
-- `version` (int): recipe schema version. Versions `1` and `2` are accepted;
-  use `2` for calibrated GPTQ/AWQ recipes.
+- `version` (int): recipe schema version. Version `1` is the original
+  checkpoint-only MSE/W8A8 schema. Version `2` is a strict superset that adds
+  `format`, `calibration`, `gptq`, `awq`, and `autoround`; GPTQ, AWQ, and
+  AutoRound recipes must use version `2`.
 - `bits` (int, default `4`): weight bit width, either `4` or `8`. Same as CLI
   `--bits`.
 - `activation_bits` (int, default `16`): activation bit width, either `8` or

@@ -82,8 +82,19 @@ def load_quantize_recipe(path: str | Path) -> dict:
     unknown = sorted(set(data) - allowed)
     if unknown:
         raise ValueError(f"Unknown recipe keys: {', '.join(unknown)}")
-    if data.get("version", 1) not in {1, 2}:
-        raise ValueError(f"Unsupported recipe version: {data.get('version')}")
+    version = data.get("version", 1)
+    if version not in {1, 2}:
+        raise ValueError(f"Unsupported recipe version: {version}")
+    calibrated_keys = {"format", "calibration", "gptq", "awq", "autoround"}
+    calibrated_methods = {"gptq", "awq", "autoround"}
+    if version == 1 and (
+        calibrated_keys & set(data)
+        or data.get("method") in calibrated_methods
+    ):
+        raise ValueError(
+            "Recipe version 2 is required for calibrated GPTQ, AWQ, and "
+            "AutoRound fields"
+        )
     return data
 
 

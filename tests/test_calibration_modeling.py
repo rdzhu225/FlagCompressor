@@ -62,6 +62,37 @@ def test_transformers_v5_fused_experts_linearize_exactly():
     assert isinstance(linearized[0].down_proj, torch.nn.Linear)
 
 
+def test_linearized_experts_only_observe_router_selected_tokens():
+    from transformers.models.qwen3_moe.configuration_qwen3_moe import (
+        Qwen3MoeConfig,
+    )
+    from transformers.models.qwen3_moe.modeling_qwen3_moe import Qwen3MoeExperts
+
+    original = Qwen3MoeExperts(
+        Qwen3MoeConfig(hidden_size=8, moe_intermediate_size=4, num_experts=2)
+    ).eval()
+    linearized = LinearExperts2D(original)
+    observed: dict[int, list[torch.Tensor]] = {0: [], 1: []}
+    handles = [
+        expert.gate_proj.register_forward_pre_hook(
+            lambda _module, args, index=index: observed[index].append(args[0])
+        )
+        for index, expert in enumerate(linearized)
+    ]
+    hidden = torch.randn(5, 8)
+    expert_indices = torch.tensor([[0], [1], [0], [1], [1]])
+    routing_weights = torch.ones(5, 1)
+
+    try:
+        linearized(hidden, expert_indices, routing_weights)
+    finally:
+        for handle in handles:
+            handle.remove()
+
+    assert [item.shape[0] for item in observed[0]] == [2]
+    assert [item.shape[0] for item in observed[1]] == [3]
+
+
 def test_awq_moe_mapping_balances_router_without_quantizing_it():
     class Router(torch.nn.Module):
         def __init__(self):

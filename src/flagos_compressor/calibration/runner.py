@@ -80,6 +80,41 @@ def _validate_fused_moe_selection(
             )
 
 
+def _fused_expert_linear_names(layer: nn.Module) -> set[str]:
+    """Return layer-relative Linear names owned by fused routed experts."""
+    from flagos_compressor.calibration.moe import LinearExperts2D
+
+    names: set[str] = set()
+    for root, module in layer.named_modules():
+        if not isinstance(module, LinearExperts2D):
+            continue
+        names.update(
+            f"{root}.{name}" if root else name
+            for name, child in module.named_modules()
+            if name and isinstance(child, nn.Linear)
+        )
+    return names
+
+
+def _require_routed_expert_coverage(
+    layer: nn.Module,
+    selected: set[str],
+    observed: set[str],
+    method: str,
+    *,
+    fused_names: set[str] | None = None,
+) -> None:
+    required = (fused_names or _fused_expert_linear_names(layer)) & selected
+    missing = sorted(required - observed)
+    if missing:
+        raise RuntimeError(
+            f"{method} calibration did not route any tokens to "
+            f"{len(missing)} selected expert projections. Increase calibration "
+            "samples or use more representative data. First missing modules: "
+            f"{missing[:3]}"
+        )
+
+
 def _validate_native_shapes(
     linears: dict[str, nn.Linear],
     policy: QuantizationPolicy,
@@ -202,6 +237,16 @@ def quantize_layer_gptq(
         finally:
             for handle in handles:
                 handle.remove()
+        _require_routed_expert_coverage(
+            layer,
+            set(group),
+            {
+                name
+                for name, quantizer in quantizers.items()
+                if quantizer.num_samples > 0
+            },
+            "GPTQ",
+        )
         for name in group:
             linear = linears[name]
             result = quantizers[name].quantize(
@@ -241,6 +286,50 @@ def _sample_indices(
     if requested <= count:
         return torch.randperm(count, generator=generator)[:requested].tolist()
     return torch.randint(count, (requested,), generator=generator).tolist()
+
+
+def _autoround_loss(
+    layer: nn.Module,
+    input_samples: list[tuple[tuple[Any, ...], dict[str, Any]]],
+    fp_outputs: list[tuple[tuple[Any, ...], dict[str, Any]]],
+    indices: list[int],
+    *,
+    device: torch.device,
+    backward: bool,
+) -> float:
+    loss_value = 0.0
+    for sample_index in indices:
+        args, kwargs = input_samples[sample_index]
+        moved_args = move_to_device(args, device)
+        moved_kwargs = move_to_device(
+            sanitize_kwargs(layer, kwargs),
+            device,
+        )
+        predicted = _hidden_output(layer(*moved_args, **moved_kwargs))
+        target = fp_outputs[sample_index][0][0].to(
+            device=device,
+            dtype=predicted.dtype,
+        )
+        sample_loss = torch.mean(
+            (predicted.float() - target.float()).square()
+        )
+        if backward:
+            (sample_loss / len(indices)).backward()
+        loss_value += float(sample_loss.detach()) / len(indices)
+    return loss_value
+
+
+def _snapshot_autoround_parameters(
+    wrappers: dict[str, AutoRoundLinear],
+) -> dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+    return {
+        name: (
+            wrapper.value.detach().cpu().clone(),
+            wrapper.min_scale.detach().cpu().clone(),
+            wrapper.max_scale.detach().cpu().clone(),
+        )
+        for name, wrapper in wrappers.items()
+    }
 
 
 def _restore_submodules(
@@ -297,6 +386,7 @@ def quantize_layer_autoround(
 
     _validate_native_shapes(linears, policy)
     _validate_fused_moe_selection(layer_name, layer, set(linears))
+    fused_expert_linears = _fused_expert_linear_names(layer)
     layer.to(device)
     original_grad_state = [
         (parameter, parameter.requires_grad) for parameter in layer.parameters()
@@ -346,6 +436,7 @@ def quantize_layer_autoround(
         policy.autoround.batch_size
         * policy.autoround.gradient_accumulate_steps,
     )
+    last_indices: list[int] = []
 
     try:
         with torch.enable_grad():
@@ -356,35 +447,19 @@ def quantize_layer_autoround(
                     effective_batch_size,
                     generator,
                 )
-                loss_value = 0.0
-                for sample_index in indices:
-                    args, kwargs = input_samples[sample_index]
-                    moved_args = move_to_device(args, device)
-                    moved_kwargs = move_to_device(
-                        sanitize_kwargs(layer, kwargs),
-                        device,
-                    )
-                    predicted = _hidden_output(layer(*moved_args, **moved_kwargs))
-                    target = fp_outputs[sample_index][0][0].to(
-                        device=device,
-                        dtype=predicted.dtype,
-                    )
-                    sample_loss = torch.mean(
-                        (predicted.float() - target.float()).square()
-                    )
-                    (sample_loss / len(indices)).backward()
-                    loss_value += float(sample_loss.detach()) / len(indices)
+                last_indices = indices
+                loss_value = _autoround_loss(
+                    layer,
+                    input_samples,
+                    fp_outputs,
+                    indices,
+                    device=device,
+                    backward=True,
+                )
 
                 if loss_value < best_loss:
                     best_loss = loss_value
-                    best_parameters = {
-                        name: (
-                            wrapper.value.detach().cpu().clone(),
-                            wrapper.min_scale.detach().cpu().clone(),
-                            wrapper.max_scale.detach().cpu().clone(),
-                        )
-                        for name, wrapper in wrappers.items()
-                    }
+                    best_parameters = _snapshot_autoround_parameters(wrappers)
                 remaining = 1.0 - (iteration / policy.autoround.iters)
                 optimizer.param_groups[0]["lr"] = learning_rate * remaining
                 if len(optimizer.param_groups) > 1:
@@ -396,6 +471,34 @@ def quantize_layer_autoround(
                     for wrapper in wrappers.values():
                         wrapper.min_scale.clamp_(0, 1)
                         wrapper.max_scale.clamp_(0, 1)
+
+        # The loss measured inside the loop belongs to the parameters before
+        # ``optimizer.step``. Evaluate the final update explicitly so it can be
+        # selected as the best state instead of being silently discarded.
+        with torch.no_grad():
+            final_loss = _autoround_loss(
+                layer,
+                input_samples,
+                fp_outputs,
+                last_indices,
+                device=device,
+                backward=False,
+            )
+        if final_loss < best_loss:
+            best_loss = final_loss
+            best_parameters = _snapshot_autoround_parameters(wrappers)
+
+        _require_routed_expert_coverage(
+            layer,
+            set(linears),
+            {
+                name
+                for name, wrapper in wrappers.items()
+                if wrapper.num_forwards > 0
+            },
+            "AutoRound",
+            fused_names=fused_expert_linears,
+        )
 
         results: dict[str, NativeQuantizedLayer] = {}
         with torch.no_grad():
@@ -482,6 +585,12 @@ def quantize_layer_awq(
         for handle in handles:
             handle.remove()
     inputs = {name: torch.cat(values, dim=0) for name, values in features.items() if values}
+    _require_routed_expert_coverage(
+        layer,
+        set(linears),
+        set(inputs),
+        "AWQ",
+    )
 
     for mapping in mappings:
         if mapping.input_name not in inputs:

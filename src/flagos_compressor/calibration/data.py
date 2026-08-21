@@ -13,6 +13,13 @@ from flagos_compressor.core.policy import CalibrationPolicy
 
 
 def _read_local_text(path: Path, text_column: str) -> list[str]:
+    """Read one of the documented local calibration schemas.
+
+    ``.txt``/``.text`` uses one sample per non-empty line. ``.jsonl`` uses one
+    JSON string or ``{text_column: string}`` object per line. ``.json`` accepts
+    a top-level list with the same string/object records, or an object whose
+    ``data`` or ``text_column`` value contains that list.
+    """
     suffix = path.suffix.lower()
     if suffix in {".txt", ".text"}:
         return [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
