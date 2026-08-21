@@ -174,6 +174,12 @@ def _forward_kwargs_for_submodule(
     device: torch.device,
 ) -> dict[str, Any]:
     kwargs = sanitize_kwargs(module, sample_kwargs)
+    # AWQ evaluates a captured attention input repeatedly. Reusing a mutable KV
+    # cache would append the same tokens on every grid-search candidate and can
+    # also mix batch shapes across samples (notably on DeepSeek-V4).
+    for cache_name in ("past_key_values", "past_key_value"):
+        if cache_name in kwargs:
+            kwargs[cache_name] = None
     return move_to_device(kwargs, device)
 
 

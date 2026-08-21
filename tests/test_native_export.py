@@ -7,7 +7,10 @@ from safetensors.torch import save_file
 from flagos_compressor.calibration.runner import NativeQuantizedLayer
 from flagos_compressor.calibration.moe import LinearExperts2D
 from flagos_compressor.core.validation import validate_artifact
-from flagos_compressor.formats.native_quantized import save_native_quantized_model
+from flagos_compressor.formats.native_quantized import (
+    _runtime_linear_names,
+    save_native_quantized_model,
+)
 from flagos_compressor.integrations.autoround import (
     official_autoround_export_config,
 )
@@ -22,6 +25,18 @@ class _ToyModel(torch.nn.Module):
         super().__init__()
         self.proj = torch.nn.Linear(8, 8, bias=False)
         self.untouched = torch.nn.Linear(8, 8, bias=False)
+
+
+def test_runtime_linear_names_include_custom_grouped_linear():
+    class GroupedLinear(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.randn(8, 4))
+
+    model = _ToyModel()
+    model.grouped = GroupedLinear()
+
+    assert _runtime_linear_names(model) == ["grouped", "proj", "untouched"]
 
 
 def _source_checkpoint(tmp_path, model):

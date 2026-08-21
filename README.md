@@ -352,4 +352,7 @@ runtime quantization config, and native GPTQ/AWQ tensor layouts.
 - AutoAWQ-compatible W4A16 calibration and native GEMM packing.
 - Transformers-v5 dense and generic fused-MoE execution without model-specific
   forward adapters.
-- CPU and CUDA torch execution.
+- Architecture-aware GPTQ/AWQ/AutoRound calibration for the standard attention
+  and MLA layouts used by GLM-4 MoE and DeepSeek-V2/V3/V4.
+- Torch execution on CPU and CUDA, with optional NPU, MLU, and MUSA runtimes
+  plus generic registered PyTorch device extensions.

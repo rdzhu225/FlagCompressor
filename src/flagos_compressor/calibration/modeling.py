@@ -73,6 +73,11 @@ def decoder_layers(model: nn.Module) -> list[tuple[str, nn.Module]]:
 
 def sanitize_kwargs(module: nn.Module, kwargs: dict[str, Any]) -> dict[str, Any]:
     signature = inspect.signature(module.forward).parameters
+    if any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.values()
+    ):
+        return dict(kwargs)
     return {key: value for key, value in kwargs.items() if key in signature}
 
 

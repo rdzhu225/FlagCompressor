@@ -45,6 +45,23 @@ def _state_for_export(
     return state
 
 
+def _runtime_linear_names(model: nn.Module) -> list[str]:
+    """Include custom runtime Linear variants that calibration leaves float."""
+    names: list[str] = []
+    for name, module in model.named_modules():
+        if not name:
+            continue
+        weight = getattr(module, "weight", None)
+        is_custom_linear = (
+            module.__class__.__name__.lower().endswith("linear")
+            and isinstance(weight, nn.Parameter)
+            and weight.dim() == 2
+        )
+        if isinstance(module, nn.Linear) or is_custom_linear:
+            names.append(name)
+    return sorted(names)
+
+
 def _patch_config(
     output_path: Path,
     *,
@@ -242,9 +259,7 @@ def save_native_quantized_model(
             encoding="utf-8",
         )
     quantized_modules = sorted(quantized)
-    all_linears = sorted(
-        name for name, module in model.named_modules() if name and isinstance(module, nn.Linear)
-    )
+    all_linears = _runtime_linear_names(model)
     unquantized_modules = [name for name in all_linears if name not in quantized]
     from flagos_compressor.calibration.moe import LinearExperts2D
 

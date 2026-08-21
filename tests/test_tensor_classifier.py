@@ -1,4 +1,7 @@
-from flagos_compressor.inspect.tensor_classifier import infer_storage_format
+from flagos_compressor.inspect.tensor_classifier import (
+    classify_weight,
+    infer_storage_format,
+)
 
 
 def test_no_scale_returns_none():
@@ -32,3 +35,21 @@ def test_byte_weight_with_block_scale_is_fp8():
         infer_storage_format((256, 512), element_size=1, scale_shape=(8,))
         == "fp8_block_e8m0"
     )
+
+
+def test_deepseek_v4_attention_compressor_is_not_selectable_linear():
+    kind, tags = classify_weight(
+        "model.layers.0.self_attn.compressor.indexer.gate_proj.weight"
+    )
+
+    assert kind == "attention_compressor"
+    assert "linear" not in tags
+
+
+def test_deepseek_v4_mla_projection_names_are_attention_linears():
+    for leaf in ("kv_proj", "q_a_proj", "q_b_proj", "o_b_proj"):
+        kind, tags = classify_weight(
+            f"model.layers.0.self_attn.{leaf}.weight"
+        )
+        assert kind == "attention_linear"
+        assert {"attention", "linear"} <= set(tags)

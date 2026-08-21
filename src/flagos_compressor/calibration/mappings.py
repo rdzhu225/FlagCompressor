@@ -17,10 +17,15 @@ class AWQMapping:
 
 
 def gptq_sequential_groups(names: list[str]) -> list[list[str]]:
-    """Llama-like ordering with a deterministic catch-all for new architectures."""
+    """Architecture-aware ordering with a deterministic catch-all."""
     stages = (
-        ("q_proj", "k_proj", "v_proj", "qkv_proj", "query_key_value", "in_proj_"),
-        ("o_proj", "out_proj"),
+        (
+            "q_proj", "k_proj", "v_proj", "qkv_proj", "query_key_value",
+            "q_a_proj", "kv_a_proj_with_mqa", "kv_proj", "wq_a", "wkv_a",
+            "in_proj_",
+        ),
+        ("q_b_proj", "kv_b_proj", "wq_b", "wkv_b"),
+        ("o_proj", "out_proj", "o_b_proj"),
         ("gate_proj", "up_proj", "gate_up_proj", "fc1", "w1", "w3"),
         ("down_proj", "fc2", "w2"),
     )
@@ -88,7 +93,10 @@ def infer_awq_mappings(layer: nn.Module, selected: set[str]) -> list[AWQMapping]
             for name in sorted(selected)
             if name.startswith(root + ".")
             and name.rsplit(".", 1)[-1]
-            in {"q_proj", "k_proj", "v_proj", "qkv_proj", "query_key_value"}
+            in {
+                "q_proj", "k_proj", "v_proj", "qkv_proj", "query_key_value",
+                "q_a_proj", "kv_a_proj_with_mqa", "kv_proj", "wq_a", "wkv_a",
+            }
         )
         qkv += tuple(
             name
@@ -107,6 +115,37 @@ def infer_awq_mappings(layer: nn.Module, selected: set[str]) -> list[AWQMapping]
         )
         if previous and qkv:
             mappings.append(AWQMapping(previous, qkv, qkv, root, root))
+
+        # DeepSeek/GLM MLA uses low-rank A -> RMSNorm -> B projection pairs.
+        # Balance the B projection against its own latent-space norm instead of
+        # treating the topology as a standard Q/K/V projection.
+        latent_pairs = (
+            (("q_a_layernorm", "q_a_norm", "wq_a_layernorm"), ("q_b_proj", "wq_b")),
+            (("kv_a_layernorm", "kv_a_norm", "wkv_a_layernorm"), ("kv_b_proj", "wkv_b")),
+        )
+        for norm_leaves, projection_leaves in latent_pairs:
+            latent_norm = _first_existing(
+                modules,
+                tuple(f"{root}.{leaf}" for leaf in norm_leaves),
+            )
+            projection = next(
+                (
+                    f"{root}.{leaf}"
+                    for leaf in projection_leaves
+                    if f"{root}.{leaf}" in selected
+                ),
+                None,
+            )
+            if latent_norm and projection:
+                mappings.append(
+                    AWQMapping(
+                        latent_norm,
+                        (projection,),
+                        (projection,),
+                        projection,
+                        projection,
+                    )
+                )
 
         value = next(
             (
@@ -132,7 +171,8 @@ def infer_awq_mappings(layer: nn.Module, selected: set[str]) -> list[AWQMapping]
                 name
                 for name in sorted(selected)
                 if name.startswith(root)
-                and name.rsplit(".", 1)[-1] in {"o_proj", "out_proj", "dense"}
+                and name.rsplit(".", 1)[-1]
+                in {"o_proj", "out_proj", "o_b_proj", "dense"}
             ),
             None,
         )
