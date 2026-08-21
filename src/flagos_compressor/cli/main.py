@@ -37,9 +37,21 @@ def build_parser() -> argparse.ArgumentParser:
     quantize.add_argument("--input", required=True)
     quantize.add_argument("--output", required=True)
     quantize.add_argument("--recipe")
-    quantize.add_argument("--select", action="append", choices=sorted(BUILTIN_SELECTIONS))
+    quantize.add_argument(
+        "--select",
+        action="append",
+        metavar="TARGET[=FORMAT[:GROUP_SIZE]]",
+        help=(
+            "Select a built-in target. Use TARGET=FORMAT for heterogeneous "
+            "quantization, for example moe=int4 or attention=int8."
+        ),
+    )
     quantize.add_argument("--exclude", action="append", choices=sorted(BUILTIN_SELECTIONS))
-    quantize.add_argument("--select-name", action="append", metavar="REGEX")
+    quantize.add_argument(
+        "--select-name",
+        action="append",
+        metavar="REGEX[=FORMAT[:GROUP_SIZE]]",
+    )
     quantize.add_argument("--exclude-name", action="append", metavar="REGEX")
     quantize.add_argument("--bits", type=int, choices=[4, 8], default=None)
     quantize.add_argument(

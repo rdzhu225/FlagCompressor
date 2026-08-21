@@ -73,6 +73,15 @@ def test_rejects_partial_routed_moe_bank():
         validate_fusion_closure(weights, selected)
 
 
+def test_rejects_deepseek_v4_compressor_quantization():
+    weights = {
+        "layers.2.attn.compressor.wkv.weight",
+        "layers.2.attn.compressor.wgate.weight",
+    }
+    with pytest.raises(ValueError, match="must remain BF16"):
+        validate_fusion_closure(weights, weights)
+
+
 def test_builds_w8a16_group_config():
     weights = {"model.layers.0.self_attn.o_proj.weight"}
     config = build_compressed_tensors_config(

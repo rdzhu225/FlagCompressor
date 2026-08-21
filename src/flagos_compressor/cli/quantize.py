@@ -165,6 +165,44 @@ def run(args) -> None:
     moe_layout = _load_moe_layout(args.input, profile, policy)
     plan = build_quantize_plan(profile, policy, moe_layout)
     ensure_no_unmatched(plan)
+    if policy.target_format_rules:
+        int4_count = (
+            plan.output_format_counts.get(
+                "compressed_tensors_int4_groupwise", 0
+            )
+            + plan.output_format_counts.get(
+                "compressed_tensors_int4_moe_fused", 0
+            )
+        )
+        int8_count = (
+            plan.output_format_counts.get(
+                "compressed_tensors_int8_groupwise", 0
+            )
+            + plan.output_format_counts.get(
+                "compressed_tensors_int8_moe_fused", 0
+            )
+        )
+        if int4_count + int8_count == 0:
+            raise RuntimeError(
+                "The formatted selectors did not match any supported tensors"
+            )
+        if args.dry_run:
+            print_plan(plan)
+            return
+        backend = build_backend(args.backend, args.device)
+        if not backend.is_available():
+            logger.warning(
+                "backend %r is unavailable; CPU fallback may be used.",
+                backend.name,
+            )
+        report = execute_plan(args.input, args.output, plan, backend)
+        logger.info("Done.")
+        logger.info("Selected INT4 tensors/banks: %d", int4_count)
+        logger.info("Selected INT8 tensors/banks: %d", int8_count)
+        logger.info("Kept tensors: %d", report.kept)
+        logger.info("Manifest: %s/quantization_manifest.json", args.output)
+        logger.info("Report: %s/quantization_report.json", args.output)
+        return
     num_bits = policy.num_bits
     linear_format = (
         "compressed_tensors_w8a8_channelwise"

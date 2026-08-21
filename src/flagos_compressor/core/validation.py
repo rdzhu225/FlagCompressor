@@ -158,20 +158,43 @@ def validate_artifact(model_path: str | Path) -> dict:
 
         config_path = path / "config.json"
         artifact = manifest.get("artifact") or {}
-        if len(observed_quant_bits) == 1:
-            manifest_bits = next(iter(observed_quant_bits))
-            expected_encoding = (
-                "int8"
-                if artifact.get("compression_format") == "int-quantized"
-                else ("uint4b8" if manifest_bits == 4 else "uint8b128")
-            )
-            if (
-                "num_bits" in artifact
-                and artifact.get("num_bits") != manifest_bits
-            ):
+        if observed_quant_bits:
+            sorted_bits = sorted(observed_quant_bits)
+            mixed_bits = len(sorted_bits) > 1
+            expected_bits = sorted_bits if mixed_bits else sorted_bits[0]
+            if artifact.get("num_bits") != expected_bits:
                 errors.append("Manifest artifact bit width is inconsistent")
-            if artifact.get("weight_encoding") != expected_encoding:
-                errors.append("Manifest artifact weight encoding is inconsistent")
+            if mixed_bits:
+                expected_encodings = {
+                    str(bits): "uint4b8" if bits == 4 else "uint8b128"
+                    for bits in sorted_bits
+                }
+                if artifact.get("weight_encoding") != "mixed":
+                    errors.append(
+                        "Manifest mixed-bit weight encoding is inconsistent"
+                    )
+                if artifact.get("weight_encodings") != expected_encodings:
+                    errors.append(
+                        "Manifest mixed-bit encoding map is inconsistent"
+                    )
+                expected_values_per_word = {
+                    str(bits): 32 // bits for bits in sorted_bits
+                }
+                if artifact.get("values_per_word") != expected_values_per_word:
+                    errors.append(
+                        "Manifest mixed-bit packing factors are inconsistent"
+                    )
+            else:
+                manifest_bits = sorted_bits[0]
+                expected_encoding = (
+                    "int8"
+                    if artifact.get("compression_format") == "int-quantized"
+                    else ("uint4b8" if manifest_bits == 4 else "uint8b128")
+                )
+                if artifact.get("weight_encoding") != expected_encoding:
+                    errors.append(
+                        "Manifest artifact weight encoding is inconsistent"
+                    )
         if (
             len(observed_strategies) == 1
             and "strategy" in artifact
@@ -227,6 +250,7 @@ def validate_artifact(model_path: str | Path) -> dict:
             config_bits = {
                 group.get("weights", {}).get("num_bits")
                 for group in config_groups.values()
+                if group.get("weights", {}).get("type") == "int"
             }
             config_bits.discard(None)
             if observed_quant_bits and config_bits != observed_quant_bits:
@@ -236,6 +260,7 @@ def validate_artifact(model_path: str | Path) -> dict:
             config_strategies = {
                 group.get("weights", {}).get("strategy")
                 for group in config_groups.values()
+                if group.get("weights", {}).get("type") == "int"
             }
             config_strategies.discard(None)
             if (

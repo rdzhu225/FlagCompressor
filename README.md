@@ -23,6 +23,54 @@ flagos-compressor inspect --input /path/to/model
 This reports detected weight formats and selectable groups such as `moe`,
 `moe.routed`, `moe.shared`, `attention`, `mlp`, and `linear`.
 
+## Heterogeneous quantization in one command
+
+Assign different target bit widths to different parts of a checkpoint in one
+execution. For example, quantize DSV4 attention to INT8 and MoE weights to
+INT4:
+
+```bash
+flagos-compressor quantize \
+  --input /path/to/DSV4-Flash \
+  --output /path/to/DSV4-Flash-mixed \
+  --select moe=int4 \
+  --select attention=int8 \
+  --backend cuda
+```
+
+Each formatted `--select` value is `SELECTOR=FORMAT[:GROUP_SIZE]`. Selectors
+can be a built-in group (`attention`, `moe`, `moe.routed`, `moe.shared`, `mlp`,
+or `linear`). Regular expressions continue to use `--select-name`, for example
+`--select-name 'model\.layers\.0\..*=int8:64'`. Formats are explicit so
+future `fp4`/`fp8` support cannot be confused with `int4`/`int8`; currently the
+exporter accepts `int4` and `int8`. They default to group sizes 32 and 128
+respectively. Name rules are applied after built-in target rules, and the last
+matching rule wins. Global `--exclude` and `--exclude-name` rules are applied
+after the formatted selections.
+
+The legacy homogeneous form remains valid: `--select moe --bits 4`. Formatted
+and unformatted selectors cannot be mixed in one command, so no selection can
+silently inherit the wrong format.
+
+The mapping is an artifact contract, not a runtime-compatibility hint. If a
+DSV4 source FP8 attention weight matches `attention=int8`, it is converted to
+INT8, including `attn.wo_a`; the planner does not silently preserve FP8 for a
+DeepGEMM implementation. Runtime support for consuming that layout is a
+separate concern.
+
+The command writes one `pack-quantized` compressed-tensors checkpoint with a
+config group for every requested format/group-size combination. DSV4 fused
+attention and shared-expert runtime aliases are included. Source-quantized
+weights that match no rule follow the existing `unselected` policy and are
+converted to BF16 by default.
+
+Per-selector mode currently supports MSE W4A16/W8A16. The formatted selectors
+own `bits`, `activation_bits`, `scale_dtype`, `strategy`, `group_size`, and
+`chunk_size`, so do not combine them with those global settings.
+`--n-candidates`, exclusions, the unselected policy, and backend/device flags
+remain configurable. Use `--dry-run` to inspect the resolved plan without
+writing the output checkpoint.
+
 ## Convert to BF16
 
 ```bash
@@ -243,10 +291,30 @@ exclude:
   - name: '.*\.layers\.0\..*'
 ```
 
+The equivalent heterogeneous recipe is:
+
+```yaml
+version: 1
+select:
+  - target: moe
+    format: int4
+  - target: attention
+    format: int8
+  - name: '^model\.layers\.0\.'
+    format: int8
+    group_size: 64
+```
+
 Recipe fields:
 
 - `version` (int): recipe schema version. Versions `1` and `2` are accepted;
   use `2` for calibrated GPTQ/AWQ recipes.
+- `select` (list): tensors to quantize. Legacy entries are a built-in group or
+  `{name: 'REGEX'}` and use the global `bits` setting. Heterogeneous entries
+  have exactly one of `target` (a built-in group) or `name` (a regex), plus an
+  explicit `format` (`int4` or `int8`). Optional per-entry `group_size` and
+  `chunk_size` override format-specific defaults. Name entries override target
+  entries when both match.
 - `bits` (int, default `4`): weight bit width, either `4` or `8`. Same as CLI
   `--bits`.
 - `activation_bits` (int, default `16`): activation bit width, either `8` or
@@ -277,9 +345,6 @@ Recipe fields:
   `gradient_accumulate_steps`, `momentum`, `enable_minmax_tuning`, and
   `enable_quantized_input`. `official_config` may point to an official
   AutoRound JSON config whose values are used as lower-priority defaults.
-- `select` (list): tensors to quantize. Each entry is either a built-in group
-  name (`moe`, `moe.routed`, `moe.shared`, `attention`, `mlp`, `linear`) or a
-  mapping `{name: 'REGEX'}`. Mirrors `--select` / `--select-name`.
 - `exclude` (list): tensors to skip, same shape as `select`. Applied on top of
   the `select` set. Mirrors `--exclude` / `--exclude-name`.
 - `unselected` (mapping): how source-quantized weights outside the selected set
@@ -288,13 +353,14 @@ Recipe fields:
   `strategy: preserve` is reserved for a future runtime-compatible mixed-format
   exporter and is rejected for now.
 
-CLI flags and recipe fields are additive: `select` / `exclude` entries from the
-recipe are merged with the corresponding CLI flags, and scalar fields
+Outside per-selector mode, CLI flags and recipe fields are additive: `select`
+and `exclude` entries from the recipe are merged with the corresponding CLI
+flags, and scalar fields
 (`bits`, `activation_bits`, `scale_dtype`, `strategy`, `method`, `group_size`,
 `n_candidates`, `chunk_size`)
 take the CLI value when provided, otherwise fall back to the recipe, otherwise
-to the bit-width-specific default. At least one selector (via CLI or recipe)
-is required.
+to the bit-width-specific default. At least one selector (via
+CLI or recipe) is required.
 
 ```bash
 flagos-compressor quantize \

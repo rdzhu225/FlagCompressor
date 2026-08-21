@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import replace
 
 from flagos_compressor.core.compressed_tensors import validate_fusion_closure
 from flagos_compressor.core.moe_layout import MoeLayout
@@ -278,6 +279,8 @@ def build_quantize_plan(
     policy: QuantizationPolicy,
     moe_layout: MoeLayout | None = None,
 ) -> ExecutionPlan:
+    if policy.target_format_rules:
+        return build_heterogeneous_plan(profile, policy, moe_layout)
     plan = ExecutionPlan(
         metadata={
             "command": "quantize",
@@ -287,6 +290,7 @@ def build_quantize_plan(
                 "format": policy.unselected.format,
             },
             "algorithm": {
+                "mode": "uniform",
                 "name": (
                     "mse_grid_search"
                     if policy.method == "mse"
@@ -412,6 +416,145 @@ def build_quantize_plan(
         ),
     )
     _validate_fused_bank_closure(profile, selected_banks)
+    return plan
+
+
+def build_heterogeneous_plan(
+    profile: ModelProfile,
+    policy: QuantizationPolicy,
+    moe_layout: MoeLayout | None = None,
+) -> ExecutionPlan:
+    """Build one compressed-tensors artifact from ordered format mappings."""
+    if not policy.target_format_rules:
+        raise ValueError("build_heterogeneous_plan requires target_format_rules")
+    if policy.method != "mse":
+        raise ValueError("Heterogeneous selected formats currently require MSE")
+
+    plan = ExecutionPlan(
+        metadata={
+            "command": "quantize",
+            "artifact_kind": "compressed_tensors",
+            "unselected_weights": {
+                "strategy": policy.unselected.strategy,
+                "format": policy.unselected.format,
+            },
+            "algorithm": {
+                "name": "heterogeneous_mse_grid_search",
+                "mode": "per_selector",
+                "n_candidates": policy.n_candidates,
+                "rules": [
+                    {
+                        "selector": rule.label,
+                        "format": rule.quant_format,
+                        "num_bits": rule.num_bits,
+                        "activation_num_bits": 16,
+                        "strategy": "group",
+                        "group_size": rule.group_size,
+                        "chunk_size": rule.chunk_size,
+                    }
+                    for rule in policy.target_format_rules
+                ],
+            },
+        }
+    )
+
+    selected_by_scheme: dict[tuple[int, int], list[str]] = defaultdict(list)
+    selected_banks_by_scheme: dict[
+        tuple[int, int], list[TensorInfo]
+    ] = defaultdict(list)
+    for tensor in profile.tensors.values():
+        if tensor.role != "weight":
+            continue
+        rule = policy.target_format_rule_for(tensor)
+        if rule is None:
+            _plan_unselected_weight(plan, tensor, policy.unselected)
+            continue
+
+        assert rule.group_size is not None
+        assert rule.chunk_size is not None
+        num_bits = rule.num_bits
+        group_size = rule.group_size
+        scheme = (num_bits, group_size)
+        effective_policy = replace(
+            policy,
+            target_format_rules=(),
+            num_bits=num_bits,
+            activation_num_bits=16,
+            strategy="group",
+            group_size=group_size,
+            chunk_size=rule.chunk_size,
+        )
+        proj_kind = _fused_expert_proj_kind(tensor)
+        if _is_fused_moe_expert(tensor):
+            if moe_layout is None:
+                raise ValueError(
+                    f"Selected fused routed-expert bank {tensor.name!r} "
+                    "requires a MoeLayout"
+                )
+            _plan_fused_moe_expert(
+                plan,
+                tensor,
+                effective_policy,
+                proj_kind,
+                moe_layout,
+            )
+            selected_banks_by_scheme[scheme].append(tensor)
+            continue
+
+        input_format = _input_format_for(tensor)
+        if input_format is None:
+            raise ValueError(
+                f"Formatted selector {rule.label!r} selected unsupported tensor "
+                f"{tensor.name!r} (dtype={tensor.dtype}, "
+                f"storage_format={tensor.storage_format}, shape={tensor.shape})"
+            )
+        logical_shape = tensor.effective_logical_shape
+        if len(logical_shape) != 2:
+            raise ValueError(
+                f"Heterogeneous input {tensor.name!r} has logical shape "
+                f"{logical_shape}; expected a 2D weight"
+            )
+        if logical_shape[1] % group_size:
+            raise ValueError(
+                f"Heterogeneous input {tensor.name!r} has in_features="
+                f"{logical_shape[1]}; must be divisible by group_size={group_size}"
+            )
+        if num_bits == 4 and logical_shape[1] % 8:
+            raise ValueError(
+                f"Heterogeneous input {tensor.name!r} has in_features="
+                f"{logical_shape[1]}; INT4 pack-quantized storage requires "
+                "in_features divisible by 8"
+            )
+        output_format = f"compressed_tensors_int{num_bits}_groupwise"
+        plan.add_action(
+            tensor,
+            input_format=input_format,
+            output_format=FormatSpec(
+                output_format,
+                {
+                    "quantizer": "mse",
+                    "num_bits": num_bits,
+                    "activation_num_bits": 16,
+                    "scale_dtype": "bfloat16",
+                    "strategy": "group",
+                    "group_size": group_size,
+                    "n_candidates": policy.n_candidates,
+                    "chunk_size": rule.chunk_size,
+                },
+            ),
+            rule_name=f"selected_{rule.label}_{rule.quant_format}",
+        )
+        selected_by_scheme[scheme].append(tensor.name)
+
+    all_logical_weights = [
+        tensor.name
+        for tensor in profile.tensors.values()
+        if tensor.role == "weight" and tensor.name.endswith(".weight")
+    ]
+    for selected in selected_by_scheme.values():
+        validate_fusion_closure(all_logical_weights, selected)
+    for selected_banks in selected_banks_by_scheme.values():
+        _validate_fused_bank_closure(profile, selected_banks)
     return plan
 
 

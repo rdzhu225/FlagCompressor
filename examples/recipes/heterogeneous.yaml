@@ -1,0 +1,6 @@
+version: 1
+select:
+  - target: moe
+    format: int4
+  - target: attention
+    format: int8

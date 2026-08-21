@@ -184,6 +184,140 @@ def test_activation_int8_requires_channel_w8():
         build_quantization_policy(args)
 
 
+def test_formatted_select_cli_needs_no_global_bits():
+    args = Namespace(
+        recipe=None,
+        select=["moe=int4", "attention=int8:64"],
+        exclude=None,
+        select_name=None,
+        exclude_name=None,
+        bits=None,
+        activation_bits=None,
+        scale_dtype=None,
+        strategy=None,
+        method=None,
+        format=None,
+        group_size=None,
+        n_candidates=17,
+        chunk_size=None,
+    )
+
+    policy = build_quantization_policy(args)
+
+    assert [
+        (rule.label, rule.quant_format, rule.group_size)
+        for rule in policy.target_format_rules
+    ] == [("moe", "int4", 32), ("attention", "int8", 64)]
+    assert policy.method == "mse"
+    assert policy.n_candidates == 17
+
+
+def test_formatted_select_recipe_needs_no_global_bits(tmp_path):
+    recipe = tmp_path / "heterogeneous.yaml"
+    recipe.write_text(
+        """version: 1
+select:
+  - target: moe
+    format: int4
+  - name: '.*\\.self_attn\\..*'
+    format: int8
+    group_size: 64
+""",
+        encoding="utf-8",
+    )
+    args = Namespace(
+        recipe=str(recipe),
+        select=None,
+        exclude=None,
+        select_name=None,
+        exclude_name=None,
+        bits=None,
+        activation_bits=None,
+        scale_dtype=None,
+        strategy=None,
+        method=None,
+        format=None,
+        group_size=None,
+        n_candidates=None,
+        chunk_size=None,
+    )
+
+    policy = build_quantization_policy(args)
+
+    assert [rule.quant_format for rule in policy.target_format_rules] == [
+        "int4",
+        "int8",
+    ]
+    assert policy.target_format_rules[1].name_pattern == r".*\.self_attn\..*"
+    assert policy.target_format_rules[1].group_size == 64
+    assert policy.n_candidates == 200
+
+
+def test_formatted_select_rejects_global_bit_override():
+    args = Namespace(
+        recipe=None,
+        select=["attention=int8"],
+        exclude=None,
+        select_name=None,
+        exclude_name=None,
+        bits=8,
+        activation_bits=None,
+        strategy=None,
+        method=None,
+        format=None,
+        group_size=None,
+        n_candidates=None,
+        chunk_size=None,
+    )
+
+    with pytest.raises(ValueError, match="own format-specific settings"):
+        build_quantization_policy(args)
+
+
+def test_formatted_and_unformatted_selectors_cannot_be_mixed():
+    args = Namespace(
+        recipe=None,
+        select=["moe=int4", "attention"],
+        exclude=None,
+        select_name=None,
+        exclude_name=None,
+        bits=None,
+        activation_bits=None,
+        scale_dtype=None,
+        strategy=None,
+        method=None,
+        format=None,
+        group_size=None,
+        n_candidates=None,
+        chunk_size=None,
+    )
+
+    with pytest.raises(ValueError, match="cannot be mixed"):
+        build_quantization_policy(args)
+
+
+def test_formatted_selector_distinguishes_unsupported_fp8_from_int8():
+    args = Namespace(
+        recipe=None,
+        select=["attention=fp8"],
+        exclude=None,
+        select_name=None,
+        exclude_name=None,
+        bits=None,
+        activation_bits=None,
+        scale_dtype=None,
+        strategy=None,
+        method=None,
+        format=None,
+        group_size=None,
+        n_candidates=None,
+        chunk_size=None,
+    )
+
+    with pytest.raises(ValueError, match="Unsupported target format 'fp8'"):
+        build_quantization_policy(args)
+
+
 @pytest.mark.parametrize("method", ["gptq", "awq", "autoround"])
 def test_calibrated_example_recipes_build_native_policies(method):
     args = Namespace(
