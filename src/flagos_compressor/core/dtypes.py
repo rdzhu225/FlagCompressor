@@ -48,3 +48,12 @@ def parse_dtype(value: Any) -> torch.dtype:
             return candidate
     raise ValueError(f"Unsupported dtype: {value}")
 
+
+def parse_w8a8_scale_dtype(value: Any) -> torch.dtype:
+    """Parse a supported W8A8 weight-scale dtype."""
+    dtype = parse_dtype(value)
+    if dtype not in {torch.float32, torch.bfloat16}:
+        raise ValueError(
+            "W8A8 scale dtype must be float32/fp32 or bfloat16/bf16"
+        )
+    return dtype

@@ -5,6 +5,7 @@ from typing import Any
 import torch
 
 from flagos_compressor.backends.base import BackendRunContext, QuantBackend
+from flagos_compressor.core.dtypes import parse_w8a8_scale_dtype
 from flagos_compressor.core.moe_layout import layout_by_name
 from flagos_compressor.formats.base import (
     ArtifactResult,
@@ -147,7 +148,7 @@ class CompressedTensorsW8A8ChannelwiseMoEFusedFormat(WeightFormat):
 
     The source bank is expanded to the per-expert Linear names consumed by
     vLLM's compressed-tensors MoE loader. Each 2D projection is stored as raw
-    INT8 with an FP32 ``[out_features, 1]`` channel scale.
+    INT8 with an FP32 or BF16 ``[out_features, 1]`` channel scale.
     """
 
     name = "compressed_tensors_w8a8_channelwise_moe_fused"
@@ -192,7 +193,9 @@ class CompressedTensorsW8A8ChannelwiseMoEFusedFormat(WeightFormat):
                     group_size=in_features,
                     n_candidates=n_candidates,
                     chunk_size=chunk_size,
-                    scale_dtype=torch.float32,
+                    scale_dtype=parse_w8a8_scale_dtype(
+                        params.get("scale_dtype", "float32")
+                    ),
                     context=context,
                 )
                 base = f"{prefix}.{expert_id}.{proj_name}"

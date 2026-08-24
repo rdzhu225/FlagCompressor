@@ -1,0 +1,21 @@
+version: 2
+method: awq
+format: awq
+bits: 4
+strategy: group
+group_size: 128
+select:
+  - linear
+calibration:
+  data: /path/to/calibration.jsonl
+  samples: 128
+  sequence_length: 512
+  seed: 42
+  text_column: text
+awq:
+  zero_point: true
+  version: gemm
+  duo_scaling: true
+  apply_clip: true
+  n_grid: 20
+  max_chunk_memory: 1073741824

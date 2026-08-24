@@ -11,7 +11,11 @@ COMMANDS = {"convert", "quantize", "inspect", "validate"}
 
 
 def _add_backend_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--backend", default="cpu", choices=["cpu", "cuda"])
+    parser.add_argument(
+        "--backend",
+        default="cpu",
+        help="PyTorch device backend, for example cpu, cuda, npu, mlu, or musa.",
+    )
     parser.add_argument("--device")
 
 
@@ -49,14 +53,104 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     quantize.add_argument(
+        "--scale-dtype",
+        choices=["fp32", "bf16"],
+        default=None,
+        help="W8A8 weight scale dtype; defaults to fp32.",
+    )
+    quantize.add_argument(
         "--strategy",
         choices=["group", "channel"],
         default=None,
     )
-    quantize.add_argument("--method", choices=["mse"], default=None)
+    quantize.add_argument(
+        "--method",
+        choices=["mse", "gptq", "awq", "autoround"],
+        default=None,
+    )
+    quantize.add_argument(
+        "--format",
+        choices=["compressed-tensors", "gptq", "awq"],
+        default=None,
+        help="Checkpoint ABI; inferred from method when omitted.",
+    )
     quantize.add_argument("--group-size", type=int, default=None)
     quantize.add_argument("--n-candidates", type=int, default=None)
     quantize.add_argument("--chunk-size", type=int, default=None)
+    quantize.add_argument(
+        "--calibration-data",
+        help="Local txt/json/jsonl calibration file or Hugging Face dataset name.",
+    )
+    quantize.add_argument("--calibration-samples", type=int)
+    quantize.add_argument("--calibration-seq-length", type=int)
+    quantize.add_argument("--calibration-seed", type=int)
+    quantize.add_argument("--calibration-split")
+    quantize.add_argument("--calibration-text-column")
+    quantize.add_argument(
+        "--trust-remote-code",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    quantize.add_argument("--gptq-block-size", type=int)
+    quantize.add_argument("--damp-percent", type=float)
+    quantize.add_argument(
+        "--desc-act",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    quantize.add_argument(
+        "--static-groups",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    quantize.add_argument(
+        "--true-sequential",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    quantize.add_argument(
+        "--symmetric",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    quantize.add_argument("--awq-version", choices=["gemm"])
+    quantize.add_argument(
+        "--awq-zero-point",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    quantize.add_argument(
+        "--awq-duo-scaling",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    quantize.add_argument(
+        "--awq-apply-clip",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    quantize.add_argument("--awq-n-grid", type=int)
+    quantize.add_argument("--awq-max-chunk-memory", type=int)
+    quantize.add_argument("--autoround-iters", type=int)
+    quantize.add_argument(
+        "--autoround-config",
+        help="Official AutoRound config.json or quantization config to import.",
+    )
+    quantize.add_argument("--autoround-lr", type=float)
+    quantize.add_argument("--autoround-minmax-lr", type=float)
+    quantize.add_argument("--autoround-batch-size", type=int)
+    quantize.add_argument("--autoround-gradient-accumulate-steps", type=int)
+    quantize.add_argument("--autoround-momentum", type=float)
+    quantize.add_argument(
+        "--autoround-minmax-tuning",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    quantize.add_argument(
+        "--autoround-quantized-input",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
     quantize.add_argument("--dry-run", action="store_true")
     _add_backend_args(quantize)
 

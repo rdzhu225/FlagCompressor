@@ -107,3 +107,26 @@ def test_w8a8_format_writes_raw_int8_and_fp32_channel_scales():
     assert scales.shape == (3, 1)
     reconstructed = quantized.float() * scales
     assert ((reconstructed - weight.float()).norm() / weight.float().norm()) < 0.02
+
+
+def test_w8a8_format_supports_bf16_channel_scales():
+    weight = torch.randn(3, 13, dtype=torch.bfloat16)
+    backend = build_backend("cpu")
+    context = BackendRunContext(
+        report=ConversionReport(backend="cpu"),
+    )
+    result = get_weight_format("compressed_tensors_w8a8_channelwise").from_canonical(
+        "model.proj.weight",
+        weight,
+        backend,
+        context,
+        {
+            "strategy": "channel",
+            "scale_dtype": "bf16",
+            "n_candidates": 8,
+            "chunk_size": 4,
+        },
+    )
+
+    assert result.tensors["model.proj.weight"].dtype == torch.int8
+    assert result.tensors["model.proj.weight_scale"].dtype == torch.bfloat16

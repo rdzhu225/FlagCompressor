@@ -1,0 +1,24 @@
+version: 2
+method: autoround
+# AutoRound is the algorithm; GPTQ is the inference checkpoint ABI.
+format: gptq
+bits: 4
+strategy: group
+group_size: 128
+select:
+  - linear
+calibration:
+  data: /path/to/calibration.jsonl
+  samples: 128
+  sequence_length: 512
+  seed: 42
+  text_column: text
+autoround:
+  # Optional: import compatible defaults from an official AutoRound config.json.
+  # official_config: /path/to/official/config.json
+  iters: 200
+  batch_size: 8
+  gradient_accumulate_steps: 1
+  momentum: 0.0
+  enable_minmax_tuning: true
+  enable_quantized_input: true

@@ -5,6 +5,7 @@ import shutil
 from collections.abc import Iterator
 from pathlib import Path
 
+from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 
 
@@ -15,10 +16,21 @@ class HfSafetensorsCheckpoint:
     def __init__(self, model_path: str | Path) -> None:
         self.model_path = Path(model_path)
         self.index_path = self.model_path / SAFETENSORS_INDEX
-        if not self.index_path.exists():
-            raise FileNotFoundError(f"Missing {self.index_path}")
-        with self.index_path.open("r", encoding="utf-8") as f:
-            self.index = json.load(f)
+        if self.index_path.exists():
+            with self.index_path.open("r", encoding="utf-8") as f:
+                self.index = json.load(f)
+        else:
+            single_file = self.model_path / "model.safetensors"
+            if not single_file.exists():
+                raise FileNotFoundError(
+                    f"Missing {self.index_path} and {single_file}"
+                )
+            with safe_open(single_file, framework="pt", device="cpu") as handle:
+                keys = list(handle.keys())
+            self.index = {
+                "metadata": {},
+                "weight_map": {name: single_file.name for name in keys},
+            }
         self.weight_map: dict[str, str] = dict(self.index["weight_map"])
 
     def shard_files(self) -> list[str]:

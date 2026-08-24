@@ -12,7 +12,13 @@ dependencies = [
   "safetensors",
   "tqdm",
   "PyYAML",
+  "transformers>=5.0,<6",
+  "huggingface-hub>=1.0,<2",
 ]
+
+[project.optional-dependencies]
+datasets = ["datasets"]
+official-autoround = ["auto-round"]
 
 
 [project.scripts]

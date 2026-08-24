@@ -144,6 +144,26 @@ def test_int8_channel_selection_does_not_require_group_alignment():
     assert channel_action.output_format.params["group_size"] is None
 
 
+def test_w8a8_plan_propagates_bf16_scale_dtype():
+    profile = _profile()
+    plan = build_quantize_plan(
+        profile,
+        QuantizationPolicy(
+            selections=("attention",),
+            num_bits=8,
+            activation_num_bits=8,
+            strategy="channel",
+            scale_dtype="bf16",
+        ),
+    )
+    action = next(
+        action
+        for action in plan.actions
+        if action.output_format.name == "compressed_tensors_w8a8_channelwise"
+    )
+    assert action.output_format.params["scale_dtype"] == "bfloat16"
+
+
 def test_int8_channel_rejects_routed_moe():
     with pytest.raises(ValueError, match="MoE.*group strategy"):
         build_quantize_plan(

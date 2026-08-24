@@ -14,6 +14,14 @@ def run(args) -> None:
         print(f"Shards: {result['shards']}")
         print(f"INT4 tensors: {result['int4_tensors']}")
         print(f"INT8 tensors: {result['int8_tensors']}")
+        if result["native_method"]:
+            print(f"Native format: {result['native_method'].upper()}")
+            if result["native_algorithm"] != result["native_method"]:
+                print(f"Quantization algorithm: {result['native_algorithm'].upper()}")
+            print(
+                "Native quantized Linear modules: "
+                f"{result['native_quantized_tensors']}"
+            )
         for error in result["errors"]:
             print(f"  ERROR: {error}")
     if not result["valid"]:
